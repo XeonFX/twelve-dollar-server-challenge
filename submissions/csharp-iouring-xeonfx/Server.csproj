@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>server</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <!-- workstation GC without background GC: no GC threads; the rare GC runs on the loop that allocated -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <!-- NativeAOT: no JIT, no tiering threads, no call counting -->
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Speed</OptimizationPreference>
+    <EventSourceSupport>false</EventSourceSupport>
+    <DebuggerSupport>false</DebuggerSupport>
+    <MetricsSupport>false</MetricsSupport>
+  </PropertyGroup>
+
+  <!-- On Linux libc and SQLite (built by build.sh into native/libsqlite3.a) bind at link time: direct calls. -->
+  <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('linux'))">
+    <DirectPInvoke Include="libc" />
+    <DirectPInvoke Include="sqlite3" />
+    <NativeLibrary Include="native/libsqlite3.a" />
+  </ItemGroup>
+  <!-- AVX2 and BMI: every x86 box since 2015 has them ("native" broke on the grader for another entry, #74) -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'linux-x64'">
+    <IlcInstructionSet>x86-64-v3</IlcInstructionSet>
+  </PropertyGroup>
+
+</Project>
