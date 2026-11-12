@@ -79,8 +79,8 @@ jobs:
       - name: benchmarks
         run: |
           export PATH="/usr/local/dotnet11:$PATH" DOTNET_ROOT=/usr/local/dotnet11 MSBUILDDISABLENODEREUSE=1
-          # in the environment, so the builds BenchmarkDotNet starts see them too
-          export Frameworks="net10.0;net11.0" Entry="$PWD/$ENTRY"
+          # in a file the project imports, so the builds BenchmarkDotNet starts see them too
+          echo "<Project><PropertyGroup><Entry>$PWD/$ENTRY</Entry><Frameworks>net10.0;net11.0</Frameworks></PropertyGroup></Project>" > lab/bench/Bench.local.props
           dotnet build lab/bench/Bench.csproj -c Release -v q
           cd lab/bench
           export SEED_DB="$GITHUB_WORKSPACE/seed/feed.db" AOT_SQLITE="$GITHUB_WORKSPACE/$ENTRY/native/libsqlite3.a"
@@ -91,7 +91,7 @@ jobs:
           grep -E "ILCompiler|Microsoft.NETCore.App.Runtime|error" /tmp/bench.log | sort -u | head -20 || true
           cp /tmp/bench.log BenchmarkDotNet.Artifacts/
           cat BenchmarkDotNet.Artifacts/results/*-report-github.md
-          if grep -q "| *NA |" BenchmarkDotNet.Artifacts/results/*-report-github.md; then grep -B2 -A12 -m3 "error" /tmp/bench.log | cut -c1-400; exit 1; fi
+          if grep -q "| *NA |" BenchmarkDotNet.Artifacts/results/*-report-github.md; then grep -m12 -E "error|undefined reference" /tmp/bench.log | cut -c1-600; exit 1; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

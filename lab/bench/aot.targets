@@ -1,8 +1,10 @@
 <Project>
   <!-- Imported into every project BenchmarkDotNet builds for a BENCH_JOBS run (CustomAfterMicrosoftCommonTargets).
-       A NativeAOT build on Linux with AOT_SQLITE set binds libc and SQLite at link time, as the entry does. -->
+       A NativeAOT build on Linux with AOT_SQLITE set binds SQLite and the entry's libc calls at link time, as the entry does
+       (by name: BenchmarkDotNet's own libraries import libc functions Linux does not have). -->
   <ItemGroup Condition="'$(PublishAot)' == 'true' And '$(AOT_SQLITE)' != '' And $(RuntimeIdentifier.StartsWith('linux'))">
-    <DirectPInvoke Include="libc" />
+    <DirectPInvoke Include="libc!syscall;libc!mmap;libc!socket;libc!setsockopt;libc!bind;libc!listen;libc!close;libc!open" />
+    <DirectPInvoke Include="libc!posix_fadvise;libc!setpriority;libc!usleep;libc!getrlimit" />
     <DirectPInvoke Include="sqlite3" />
     <NativeLibrary Include="$(AOT_SQLITE)" />
   </ItemGroup>

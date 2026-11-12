@@ -199,7 +199,7 @@ public unsafe class Pieces
 /// <item>aot10, aot11: NativeAOT as the entry builds it (speed, x86-64-v3 on x64). Suffixes: -v2, -v4 and -native for
 /// the instruction set, -blended for the default optimization preference, -size.</item>
 /// </list>
-/// The project must target both frameworks (Frameworks="net10.0;net11.0" in the environment) and the SDK must be .NET 11's to run
+/// The project must target both frameworks (Frameworks in Bench.local.props, as Entry) and the SDK must be .NET 11's to run
 /// the 11 jobs. On Linux, with AOT_SQLITE set to the entry's native/libsqlite3.a, the NativeAOT jobs link SQLite and
 /// libc as the entry does (aot.targets, which the environment hands to every build BenchmarkDotNet starts).
 /// </summary>

@@ -2,9 +2,11 @@
 
   <!-- BenchmarkDotNet over the pieces of csharp-iouring-xeonfx, compiled from the entry's own sources
        (-p:Entry=folder). Run with SEED_DB set to the seed's feed.db: dotnet run -c Release, then the filter '*'. -->
+  <!-- Entry and Frameworks for every build of this project, also those BenchmarkDotNet starts (not in git) -->
+  <Import Project="Bench.local.props" Condition="Exists('Bench.local.props')" />
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <!-- Frameworks="net10.0;net11.0" in the environment for the runtime comparison (BENCH_JOBS, see Program.cs) -->
+    <!-- Frameworks net10.0;net11.0 for the runtime comparison (BENCH_JOBS, see Program.cs) -->
     <TargetFrameworks Condition="'$(Frameworks)' != ''">$(Frameworks)</TargetFrameworks>
     <TargetFramework Condition="'$(Frameworks)' == ''">net10.0</TargetFramework>
     <Nullable>enable</Nullable>
