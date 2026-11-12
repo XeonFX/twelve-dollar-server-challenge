@@ -41,7 +41,15 @@ sudo bash -c "ulimit -n 1000000; export DOTNET_ROOT=/usr/local/dotnet; exec task
 while IFS= read -r line; do
   echo "$line" >> "$OUT/$label.lg.txt"
   case "$line" in
-    HOLD*) u0=$(usage); b0=$(busy); t0=$(date +%s.%N) ;;
+    HOLD*) u0=$(usage); b0=$(busy); t0=$(date +%s.%N)
+      # PROFILE=1: where CPU 0's time goes for 15 s of the hold, kernel and entry together
+      if [ "${PROFILE:-}" = 1 ] && [ ! -e "$OUT/$label.perf.data" ]; then
+        (sleep 10; sudo perf record -q -C 0 -F 1999 -g -o "$OUT/$label.perf.data" -- sleep 15 > /dev/null 2>&1
+         sudo perf report -i "$OUT/$label.perf.data" --no-children --sort dso,symbol --stdio 2>/dev/null | grep -v "^$" | grep -E "^ +[0-9.]+%" | head -70 > "$OUT/$label.perf.txt"
+         sudo perf report -i "$OUT/$label.perf.data" --no-children --sort dso --stdio 2>/dev/null | grep -E "^ +[0-9.]+%" | head -12 > "$OUT/$label.perf-dso.txt"
+         sudo perf report -i "$OUT/$label.perf.data" --no-children --sort symbol --stdio -G 2>/dev/null | grep -v "^$" | head -260 > "$OUT/$label.perf-callers.txt"
+         sudo rm -f "$OUT/$label.perf.data") &
+      fi ;;
     all*) all=$line ;;
     DONE*)
       u1=$(usage); b1=$(busy); t1=$(date +%s.%N); peak=$(cat "$cg/memory.peak")
