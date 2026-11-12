@@ -43,7 +43,7 @@ permissions:
   contents: read
 env:
   # perf/csharp-iouring-runtimes: the entry at f43b971 with the build options (RUNTIME, DOTNET, PUBLISH_PROPS)
-  ENTRY_REF: perf/csharp-iouring-runtimes
+  ENTRY_REF: 12dba16069f837a943931f976aeb2aab11fd0c25
   ENTRY: entry/submissions/csharp-iouring-xeonfx
   SDK11: 11.0.100
   DOTNET_CLI_TELEMETRY_OPTOUT: 1

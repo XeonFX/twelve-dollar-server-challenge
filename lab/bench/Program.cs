@@ -213,7 +213,9 @@ static class Program
         Job job = Job.Default.WithLaunchCount(1).WithWarmupCount(6).WithIterationCount(15).WithId(name);
         if (parts[0].StartsWith("jit"))
         {
-            job = job.WithRuntime(CoreRuntime.CreateForNewVersion(tfm, ".NET " + tfm[3..]))
+            // BenchmarkDotNet 0.15.8 knows no .NET 11: the toolchain's framework decides what runs, and the summary's
+            // list of jobs shows each process's real runtime
+            job = job.WithRuntime(CoreRuntime.Core10_0)
                 .WithToolchain(CsProjCoreToolchain.From(new NetCoreAppSettings(tfm, null, ".NET " + tfm[3..])));
             var env = new List<EnvironmentVariable>();
             foreach (string flag in parts.Skip(1))
