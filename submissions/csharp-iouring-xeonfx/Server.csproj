@@ -3,6 +3,8 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
+    <!-- for measuring: -p:ServerFramework=net11.0 (a TargetFramework on the command line misses the restore) -->
+    <TargetFramework Condition="'$(ServerFramework)' != ''">$(ServerFramework)</TargetFramework>
     <AssemblyName>server</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
