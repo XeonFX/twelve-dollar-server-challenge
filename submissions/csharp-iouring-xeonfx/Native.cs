@@ -10,7 +10,7 @@ static unsafe partial class Native
     // the values of Linux's headers on x86-64
     public const int EAgain = 11, EIntr = 4, ENoBufs = 105, ECanceled = 125;
     public const long SysIoUringSetup = 425, SysIoUringEnter = 426, SysIoUringRegister = 427;
-    const int AfInet = 2, SockStream = 1, SockCloExec = 0x80000, SolSocket = 1, SoReuseAddr = 2;
+    const int AfInet = 2, SockStream = 1, SockCloExec = 0x80000, SolSocket = 1, SoReuseAddr = 2, SoReusePort = 15;
     const int IpProtoTcp = 6, TcpNoDelay = 1, RlimitNoFile = 7;
     public const int ProtRead = 1, ProtWrite = 2, MapShared = 0x01, MapPrivate = 0x02, MapAnonymous = 0x20;
     public const int MapPopulate = 0x8000;
@@ -63,25 +63,32 @@ static unsafe partial class Native
         return (int)Math.Min(soft, 65535UL);
     }
 
-    /// <summary>A listening IPv4 TCP socket on <paramref name="address"/>. TCP_NODELAY is set on it: accepted sockets
+    /// <summary><paramref name="count"/> listening IPv4 TCP sockets on one address (SO_REUSEPORT: the kernel spreads
+    /// new connections over them). Each has its own accept queue, which the kernel caps at somaxconn (4,096), so
+    /// together they hold a ramp of new users through a slow pass. TCP_NODELAY is set on them: accepted sockets
     /// inherit it, and a fixed file has no fd to set it on later.</summary>
-    public static int Listen(IPAddress address, int port)
+    public static int[] Listen(IPAddress address, int port, int count)
     {
         if (address.AddressFamily != AddressFamily.InterNetwork) throw new NotSupportedException("HOST must be IPv4");
-        int fd = socket(AfInet, SockStream | SockCloExec, 0);
-        if (fd < 0) throw new InvalidOperationException($"socket: errno {Errno}");
-        int one = 1;
-        setsockopt(fd, SolSocket, SoReuseAddr, &one, 4);
-        setsockopt(fd, IpProtoTcp, TcpNoDelay, &one, 4);
+        var fds = new int[count];
         byte* sa = stackalloc byte[16];
         new Span<byte>(sa, 16).Clear();
         sa[0] = AfInet;
         sa[2] = (byte)(port >> 8);
         sa[3] = (byte)port;
         address.TryWriteBytes(new Span<byte>(sa + 4, 4), out _);
-        if (bind(fd, sa, 16) != 0) throw new InvalidOperationException($"bind {address}:{port}: errno {Errno}");
-        // the kernel caps the backlog at somaxconn (4,096); a ramp of new users should not overflow it
-        if (listen(fd, 65535) != 0) throw new InvalidOperationException($"listen: errno {Errno}");
-        return fd;
+        for (int i = 0; i < count; i++)
+        {
+            int fd = socket(AfInet, SockStream | SockCloExec, 0);
+            if (fd < 0) throw new InvalidOperationException($"socket: errno {Errno}");
+            int one = 1;
+            setsockopt(fd, SolSocket, SoReuseAddr, &one, 4);
+            if (setsockopt(fd, SolSocket, SoReusePort, &one, 4) != 0) throw new InvalidOperationException($"SO_REUSEPORT: errno {Errno}");
+            setsockopt(fd, IpProtoTcp, TcpNoDelay, &one, 4);
+            if (bind(fd, sa, 16) != 0) throw new InvalidOperationException($"bind {address}:{port}: errno {Errno}");
+            if (listen(fd, 65535) != 0) throw new InvalidOperationException($"listen: errno {Errno}");
+            fds[i] = fd;
+        }
+        return fds;
     }
 }

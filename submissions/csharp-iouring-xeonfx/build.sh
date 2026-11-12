@@ -24,7 +24,7 @@ if [ ! -f native/libsqlite3.a ]; then
     -DSQLITE_DQS=0 -DSQLITE_THREADSAFE=2 -DSQLITE_DEFAULT_MEMSTATUS=0
     -DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS -DSQLITE_MAX_EXPR_DEPTH=0
     -DSQLITE_OMIT_DECLTYPE -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_PROGRESS_CALLBACK -DSQLITE_OMIT_SHARED_CACHE
-    -DSQLITE_OMIT_AUTOINIT -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_USE_ALLOCA)
+    -DSQLITE_OMIT_AUTOINIT -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_USE_ALLOCA -DHAVE_FDATASYNC=1 -DHAVE_USLEEP=1)
   gcc "${CFLAGS[@]}" -fprofile-generate -fprofile-dir="$PWD/native/profile" -c native/sqlite3.c -o native/sqlite3.o
   gcc -O2 -Inative -c sqlite-train.c -o native/train.o
   gcc -fprofile-generate native/train.o native/sqlite3.o -lm -o native/train

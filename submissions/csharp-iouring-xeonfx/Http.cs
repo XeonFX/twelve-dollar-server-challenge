@@ -7,7 +7,7 @@ static class Http
 {
     /// <summary>Connection flags. In: <see cref="ContinueSent"/> when the request at the start of the input already
     /// got its 100 Continue. Out: <see cref="Close"/> when the last response closes the connection,
-    /// <see cref="Held"/> when a write waits for the WAL to catch up (the loop runs it again later).</summary>
+    /// <see cref="Held"/> when a write waits for the pass that commits (the loop runs it again then).</summary>
     public const int Close = 1, ContinueSent = 2, Held = 4;
 
     const int MaxHead = 16384, MaxBody = 1 << 20;
@@ -107,7 +107,7 @@ static class Http
                 return off;
             }
             bool post = method.SequenceEqual("POST"u8);
-            if (post && Db.HoldWrites)
+            if (post && !Db.WritesOpen)
             {
                 flags |= Held;
                 return off;

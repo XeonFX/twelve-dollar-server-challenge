@@ -28,8 +28,7 @@ static class Program
             Db.StartCheckpoints();
             string host = Env("HOST", "127.0.0.1");
             int port = int.Parse(Env("PORT", "3000"));
-            int fd = Native.Listen(Address(host), port);
-            var loop = new Loop(fd);
+            var loop = new Loop(Native.Listen(Address(host), port, Loop.Knob("LISTENERS", 8)));
             Console.WriteLine($"listening on {host}:{port}, database {path}, reads: {(Reads.On ? "B-tree" : "SQL")}");
             loop.Run();
             return 0;

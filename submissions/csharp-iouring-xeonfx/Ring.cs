@@ -62,7 +62,8 @@ sealed unsafe class Ring
     /// <summary>Provided receive buffers: a request is a few hundred bytes, a bigger one arrives in parts. A loop
     /// that falls behind takes many at once (the receives complete in one enter), and a receive with no buffer fails
     /// and must be armed again, so there are plenty.</summary>
-    public const int BufferCount = 8192, BufferSize = 2048;
+    public const int BufferSize = 2048;
+    public static readonly int BufferCount = (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)Math.Clamp(Loop.Knob("RECV_BUFFERS", 8192), 64, 32768));
     const ushort BufferGroup = 0;
 
     // user_data: op (3 bits) | ring (3) | slot (16) | gen (24) | extra (18)
@@ -82,8 +83,9 @@ sealed unsafe class Ring
     public readonly int Index, Fd, Slots;
     public readonly Conn[] Conns;
     public int Open;
-    public bool Accepting;
-    public uint AcceptGen;
+    /// <summary>A bit for each listener with a multishot accept armed on this ring.</summary>
+    public uint Accepting;
+    readonly uint[] _acceptGens = new uint[32];
 
     readonly uint* _sqHead, _sqTail, _cqHead, _cqTail;
     readonly uint _sqMask, _cqMask, _sqEntries;
@@ -144,7 +146,7 @@ sealed unsafe class Ring
         _bufMem = MapAnonymous(BufferCount * BufferSize);
         new Span<byte>(reg, 40).Clear();
         *(ulong*)reg = (ulong)_bufRing;
-        *(uint*)(reg + 8) = BufferCount;
+        *(uint*)(reg + 8) = (uint)BufferCount;
         *(ushort*)(reg + 12) = BufferGroup;
         // Ubuntu's 6.8.0-147 answers EINVAL to every buffer ring (7.0 takes them)
         _legacy = Native.syscall(Native.SysIoUringRegister, Fd, RegisterPbufRing, (long)reg, 1, 0, 0) < 0;
@@ -271,27 +273,46 @@ sealed unsafe class Ring
         return n;
     }
 
-    public void Accept(int listenFd)
+    /// <summary>Arms a multishot accept for each listener that has none. Its user_data carries the listener's
+    /// index where a connection's carries the slot.</summary>
+    public void Accept(int[] listeners)
     {
-        AcceptGen++;
-        byte* s = Sqe();
-        s[0] = OpAccept;
-        *(ushort*)(s + 2) = AcceptMultishot;
-        *(int*)(s + 4) = listenFd;
-        *(ulong*)(s + 32) = Ud(UdAccept, Index, 0, AcceptGen, 0);
-        *(uint*)(s + 44) = FileIndexAlloc;
-        Accepting = true;
+        for (int i = 0; i < listeners.Length; i++)
+        {
+            if ((Accepting >> i & 1) != 0) continue;
+            byte* s = Sqe();
+            s[0] = OpAccept;
+            *(ushort*)(s + 2) = AcceptMultishot;
+            *(int*)(s + 4) = listeners[i];
+            *(ulong*)(s + 32) = Ud(UdAccept, Index, i, ++_acceptGens[i], 0);
+            *(uint*)(s + 44) = FileIndexAlloc;
+            Accepting |= 1u << i;
+        }
+    }
+
+    /// <summary>A multishot accept ended (its completion had no MORE flag): true when it is the one armed now, not
+    /// one cancelled earlier.</summary>
+    public bool AcceptEnded(ulong userData)
+    {
+        int i = UdSlot(userData);
+        if (UdGen(userData) != (_acceptGens[i] & 0xFFFFFF) || (Accepting >> i & 1) == 0) return false;
+        Accepting &= ~(1u << i);
+        return true;
     }
 
     public void StopAccept()
     {
-        byte* s = Sqe();
-        s[0] = OpAsyncCancel;
-        s[1] = SqeCqeSkipSuccess;
-        *(int*)(s + 4) = -1;
-        *(ulong*)(s + 16) = Ud(UdAccept, Index, 0, AcceptGen, 0); // the user_data to cancel
-        *(ulong*)(s + 32) = UdIgnore;
-        Accepting = false;
+        for (int i = 0; Accepting != 0; i++)
+        {
+            if ((Accepting >> i & 1) == 0) continue;
+            byte* s = Sqe();
+            s[0] = OpAsyncCancel;
+            s[1] = SqeCqeSkipSuccess;
+            *(int*)(s + 4) = -1;
+            *(ulong*)(s + 16) = Ud(UdAccept, Index, i, _acceptGens[i], 0); // the user_data to cancel
+            *(ulong*)(s + 32) = UdIgnore;
+            Accepting &= ~(1u << i);
+        }
     }
 
     public void Recv(int slot)

@@ -35,6 +35,8 @@ static unsafe class Db
     public static bool InTxn;
     /// <summary>The loop holds new writes until the checkpoint thread started the WAL again.</summary>
     public static bool HoldWrites;
+    /// <summary>Set by the loop for each pass: writes run only in a pass that commits.</summary>
+    public static bool WritesOpen = true;
     /// <summary>WAL frames after the loop's last commit (sqlite3_wal_hook).</summary>
     static int _walFrames;
 
@@ -170,8 +172,9 @@ static unsafe class Db
 
     public static string Error => ErrorOf(_db);
 
-    /// <summary>The request connection, for tests.</summary>
+    /// <summary>The request connection and the WAL size the loop last saw, for tests.</summary>
     internal static nint Connection => _db;
+    internal static int WalFrames => _walFrames;
 
     static void Check(int rc)
     {
@@ -228,8 +231,9 @@ static unsafe class Db
 
     // ---- checkpoints ----
 
-    /// <summary>Moves the checkpoint round on. The loop calls it once per pass, with no transaction open; true
-    /// when a hold just ended and the held writes can run.</summary>
+    /// <summary>Moves the checkpoint round on. The loop calls it once per pass, with the time in milliseconds; true
+    /// when a hold just ended. While <see cref="HoldWrites"/> is set the loop ends its transaction with every
+    /// pass: the WAL starts again only when no pass reads it.</summary>
     public static bool CheckpointStep(long now)
     {
         switch (_phase)

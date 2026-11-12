@@ -22,12 +22,22 @@ using System.Threading;
 sealed unsafe class Loop
 {
     const int MaxRings = 8;
+
+    /// <summary>A setting from the environment, for testing; <paramref name="fallback"/> when it is not set.</summary>
+    public static int Knob(string name, int fallback) =>
+        int.TryParse(Environment.GetEnvironmentVariable(name), out int v) && v >= 0 ? v : fallback;
+
     /// <summary>Completions handled in one pass at most (the rest wait, in order, for the next one), about 40 ms of
     /// work. Responses go out only at the end of a pass, so an uncapped pass after a stall would hold every request
     /// that came meanwhile, take as long again, and keep the loop in passes of a second or more.</summary>
-    const int PassCap = 1024;
-    const uint WaitCount = 256;
-    const long WaitNanos = 8_000_000;
+    static readonly int PassCap = Math.Max(1, Knob("PASS_CAP", 1024));
+    /// <summary>A pass starts when this many completions wait, or after <see cref="WaitNanos"/>.</summary>
+    static readonly uint WaitCount = (uint)Math.Max(1, Knob("WAIT_COUNT", 256));
+    static readonly long WaitNanos = Math.Max(1, Knob("WAIT_US", 8000)) * 1000L;
+    /// <summary>Writes run, and the transaction commits, at most once in this long (0: in every pass). The passes
+    /// between read in the transaction that is open: nothing else writes, so they read what is committed, and
+    /// their responses go out at once.</summary>
+    static readonly long WindowTicks = Knob("WINDOW_MS", 0) * Stopwatch.Frequency / 1000;
     /// <summary>A connection state bit beside <see cref="Ring"/>'s: its next request already got 100 Continue.</summary>
     const byte ContinueSent = 64;
     /// <summary>The bits of a user_data that name a (ring, slot, generation).</summary>
@@ -40,7 +50,8 @@ sealed unsafe class Loop
         public bool Close;
     }
 
-    readonly int _listenFd, _slots;
+    readonly int[] _listeners;
+    readonly int _slots;
     readonly List<Ring> _rings = new(MaxRings);
     /// <summary>The responses of one pass; the kernel sends from it before the next pass.</summary>
     readonly Arena _out = new(1 << 20);
@@ -51,17 +62,17 @@ sealed unsafe class Loop
     readonly List<Cqe> _carry = new(256);
     /// <summary>Receives that found no free buffer, to arm again as buffers come back.</summary>
     readonly Queue<(int Ring, int Slot, uint Gen)> _rearm = new();
-    /// <summary>Connections whose next request is a write held by <see cref="Db.HoldWrites"/>.</summary>
+    /// <summary>Connections whose next request is a write that waits for <see cref="Db.WritesOpen"/>.</summary>
     readonly List<(int Ring, int Slot, uint Gen)> _held = new();
     /// <summary>Buffers of sends still in flight for connections that closed meanwhile.</summary>
     readonly Dictionary<ulong, byte[]> _zombies = new();
     readonly byte* _waitArg;
     int _pass, _acceptRing;
-    long _acceptRetryAt;
+    long _acceptRetryAt, _windowAt;
 
-    public Loop(int listenFd)
+    public Loop(int[] listeners)
     {
-        _listenFd = listenFd;
+        _listeners = listeners;
         _slots = Native.MaxFiles();
         // io_uring_getevents_arg (sigmask, sigmask_sz, pad, ts) and the __kernel_timespec it points to
         _waitArg = (byte*)NativeMemory.AllocZeroed(40);
@@ -79,22 +90,32 @@ sealed unsafe class Loop
 
     public void Run()
     {
-        _rings[0].Accept(_listenFd);
+        _rings[0].Accept(_listeners);
         _rings[0].Submit();
         int open = 0;
         while (true)
         {
-            // 1. wait: for 256 completions or 8 ms while connections are open, else for the first one
+            // 1. wait: for WaitCount completions or WaitNanos while connections are open, else for the first one
             Ring r0 = _rings[0];
             if (_carry.Count > 0) r0.Submit();
-            else if (open == 0 && _rings.Count == 1 && r0.Accepting) r0.Enter(1, Ring.EnterGetEvents, null);
+            else if (open == 0 && _rings.Count == 1 && r0.Accepting != 0)
+            {
+                // nothing may come for a long time: no transaction stays open meanwhile
+                if (Db.InTxn) Db.Commit();
+                r0.Enter(1, Ring.EnterGetEvents, null);
+            }
             else r0.Enter(WaitCount, Ring.EnterGetEvents | Ring.EnterExtArg, _waitArg);
             for (int i = 1; i < _rings.Count; i++) _rings[i].Submit();
 
             // 2. handle the completions
             _pass++;
             Api.Tick();
-            if (Db.CheckpointStep(Environment.TickCount64)) ResumeHeld();
+            long now = Stopwatch.GetTimestamp();
+            Db.CheckpointStep(now / (Stopwatch.Frequency / 1000));
+            // writes run only in a pass that commits: once per window, and not while a checkpoint holds them
+            bool window = !Db.HoldWrites && now >= _windowAt;
+            Db.WritesOpen = window;
+            if (window && _held.Count > 0) ResumeHeld();
             _cqes.Clear();
             int carried = Math.Min(_carry.Count, PassCap);
             for (int i = 0; i < carried; i++) _cqes.Add(_carry[i]);
@@ -119,8 +140,11 @@ sealed unsafe class Loop
                 if (c.Gen == gen && (c.State & (Ring.Live | Ring.Receiving)) == Ring.Live) r.Recv(slot);
             }
 
-            // 3. commit, then send
-            bool committed = !Db.InTxn || Db.Commit();
+            // 3. commit, then send. A pass between two windows leaves the transaction open for the next one, unless
+            // it was idle or a checkpoint waits for the loop to let go of the WAL.
+            bool committed = true;
+            if (Db.InTxn && (window || Db.HoldWrites || _cqes.Count == 0)) committed = Db.Commit();
+            if (window) _windowAt = now + WindowTicks;
             Flush(committed);
             ManageAccept();
             foreach (Ring r in _rings)
@@ -180,9 +204,8 @@ sealed unsafe class Loop
 
     void OnAccept(Ring r, Cqe e)
     {
-        if ((e.Flags & Ring.CqeFMore) == 0 && Ring.UdGen(e.UserData) == (r.AcceptGen & 0xFFFFFF))
+        if ((e.Flags & Ring.CqeFMore) == 0 && r.AcceptEnded(e.UserData))
         {
-            r.Accepting = false;
             // an error ends the multishot accept: arm it again a little later, not in a tight loop
             if (e.Res < 0 && e.Res != -Native.ECanceled) _acceptRetryAt = Environment.TickCount64 + 10;
         }
@@ -455,7 +478,8 @@ sealed unsafe class Loop
         }
     }
 
-    /// <summary>Answers, in this pass, the writes that waited for a hold to end.</summary>
+    /// <summary>Answers, in this pass, the writes that waited for the window or for a checkpoint hold, oldest
+    /// first.</summary>
     void ResumeHeld()
     {
         foreach (var (ri, slot, gen) in _held)
@@ -476,8 +500,15 @@ sealed unsafe class Loop
     void ManageAccept()
     {
         Ring cur = _rings[_acceptRing];
-        if (cur.Accepting && cur.Slots - cur.Open < Reserve(cur)) cur.StopAccept();
-        if (cur.Accepting || Environment.TickCount64 < _acceptRetryAt) return;
+        uint all = (1u << _listeners.Length) - 1;
+        if (cur.Accepting != 0 && cur.Slots - cur.Open < Reserve(cur)) cur.StopAccept();
+        if (cur.Accepting == all || Environment.TickCount64 < _acceptRetryAt) return;
+        if (cur.Accepting != 0)
+        {
+            // some of its accepts ended with an error: arm those again
+            cur.Accept(_listeners);
+            return;
+        }
         int target = -1;
         for (int i = 0; i < _rings.Count && target < 0; i++)
             if (_rings[i].Slots - _rings[i].Open >= 2 * Reserve(_rings[i])) target = i;
@@ -495,6 +526,6 @@ sealed unsafe class Loop
         }
         if (target < 0) return;
         _acceptRing = target;
-        if (!_rings[target].Accepting) _rings[target].Accept(_listenFd);
+        _rings[target].Accept(_listeners);
     }
 }
