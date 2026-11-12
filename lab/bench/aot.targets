@@ -1,0 +1,9 @@
+<Project>
+  <!-- Imported into every project BenchmarkDotNet builds for a BENCH_JOBS run (CustomAfterMicrosoftCommonTargets).
+       A NativeAOT build on Linux with AOT_SQLITE set binds libc and SQLite at link time, as the entry does. -->
+  <ItemGroup Condition="'$(PublishAot)' == 'true' And '$(AOT_SQLITE)' != '' And $(RuntimeIdentifier.StartsWith('linux'))">
+    <DirectPInvoke Include="libc" />
+    <DirectPInvoke Include="sqlite3" />
+    <NativeLibrary Include="$(AOT_SQLITE)" />
+  </ItemGroup>
+</Project>

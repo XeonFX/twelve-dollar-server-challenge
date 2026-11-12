@@ -1,0 +1,179 @@
+# Which .NET runtime setup makes csharp-iouring-xeonfx fastest: NativeAOT or the JIT, .NET 10 or .NET 11.
+#  - bench: BenchmarkDotNet over the entry's pieces, one process for each runtime (lab/bench, BENCH_JOBS).
+#  - load:  several builds of the entry (one for each runtime setup) side by side in one staircase on one runner,
+#           with their startup times and idle memory.
+# Both run on a manual start only, or with [bench] / [load] in the commit message.
+name: xeonfx runtimes
+on:
+  push:
+    branches: [test/xeonfx-runtimes]
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "which jobs: bench, load or both"
+        default: "bench load"
+      levels:
+        description: users at each step
+        default: "40000,80000"
+      rivals:
+        description: entries to run beside ours
+        default: "rust-iouring-kensac"
+      builds:
+        description: "builds of our entry, label:KEY=value,... separated by spaces. Keys: NET (10 or 11), RUNTIME (aot or jit), PROPS (dotnet publish arguments joined with +)"
+        default: "aot10: jit10:RUNTIME=jit jit10r2r:RUNTIME=jit,PROPS=-p:PublishReadyToRun=true aot11:NET=11 jit11:NET=11,RUNTIME=jit"
+      variants:
+        description: "runs, label:build:NAME=value,... separated by spaces (the settings go into the entry's environment)"
+        default: "aot10:aot10: jit10:jit10: jit10r2r:jit10r2r: jit10tc0:jit10:DOTNET_TieredCompilation=0 jit10nopgo:jit10:DOTNET_TieredPGO=0 aot11:aot11: jit11:jit11:"
+      rounds:
+        description: times each run repeats
+        default: "1"
+      starts:
+        description: starts of each run that only measure the startup
+        default: "3"
+      bench_jobs:
+        description: "runtimes for BenchmarkDotNet (lab/bench/Program.cs)"
+        default: "aot10 jit10 jit10-nopgo jit10-tc0 aot11 jit11 jit11-tc0 aot10-v4 aot10-v2 aot10-blended aot11-v4"
+      bench_filter:
+        description: BenchmarkDotNet filters
+        default: "*Pieces.Feed *Pieces.Post *Pieces.Like *Pieces.Create *Pieces.Mix"
+      grown:
+        description: posts the benchmark's database grows by first
+        default: "0"
+permissions:
+  contents: read
+env:
+  # perf/csharp-iouring-runtimes: the entry at f43b971 with the build options (RUNTIME, DOTNET, PUBLISH_PROPS)
+  ENTRY_REF: perf/csharp-iouring-runtimes
+  ENTRY: entry/submissions/csharp-iouring-xeonfx
+  SDK11: 11.0.100
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  bench:
+    if: (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.jobs, 'bench')) || contains(github.event.head_commit.message, '[bench]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ENTRY_REF }}
+          path: entry
+      - name: tools and seed
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sqlite3 unzip
+          bash seed/make-seed.sh
+          nproc; free -m | head -2; uname -r; grep -m1 "model name" /proc/cpuinfo
+      - name: both SDKs and the entry's two SQLite builds
+        run: |
+          sudo bash "$ENTRY/install.sh" > /tmp/install.log 2>&1 || { tail -30 /tmp/install.log; exit 1; }
+          sudo DOTNET_SDK="$SDK11" DOTNET_DIR=/usr/local/dotnet11 bash "$ENTRY/install.sh" > /tmp/install.log 2>&1 || { tail -30 /tmp/install.log; exit 1; }
+          # the .NET 10 runtime beside the .NET 11 SDK: one dotnet builds and runs both
+          sudo bash /tmp/dotnet-install.sh --runtime dotnet --channel 10.0 --install-dir /usr/local/dotnet11 > /dev/null
+          /usr/local/dotnet11/dotnet --list-sdks; /usr/local/dotnet11/dotnet --list-runtimes
+          bash "$ENTRY/build.sh" > /tmp/build.log 2>&1 || { tail -40 /tmp/build.log; exit 1; }
+          RUNTIME=jit bash "$ENTRY/build.sh" > /tmp/build.log 2>&1 || { tail -40 /tmp/build.log; exit 1; }
+          mkdir -p lab/tests/native && cp "$ENTRY/native/libsqlite3.so" lab/tests/native/
+          ls -l "$ENTRY/native"
+      - name: benchmarks
+        run: |
+          export PATH="/usr/local/dotnet11:$PATH" DOTNET_ROOT=/usr/local/dotnet11 MSBUILDDISABLENODEREUSE=1
+          export Frameworks="net10.0;net11.0"
+          dotnet build lab/bench/Bench.csproj -c Release -v q -p:Entry="$PWD/$ENTRY"
+          cd lab/bench
+          export SEED_DB="$GITHUB_WORKSPACE/seed/feed.db" AOT_SQLITE="$GITHUB_WORKSPACE/$ENTRY/native/libsqlite3.a"
+          export GROWN="${{ github.event.inputs.grown || '0' }}"
+          export BENCH_JOBS="${{ github.event.inputs.bench_jobs || 'aot10 jit10 aot11 jit11' }}"
+          # shellcheck disable=SC2086
+          dotnet bin/Release/net10.0/Bench.dll --filter ${{ github.event.inputs.bench_filter || '*Pieces.Feed *Pieces.Post *Pieces.Like *Pieces.Create *Pieces.Mix' }} > /tmp/bench.log 2>&1 || { tail -80 /tmp/bench.log; exit 1; }
+          grep -E "ILCompiler|Microsoft.NETCore.App.Runtime|error" /tmp/bench.log | sort -u | head -20 || true
+          cat BenchmarkDotNet.Artifacts/results/*-report-github.md
+          cp /tmp/bench.log BenchmarkDotNet.Artifacts/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench
+          path: lab/bench/BenchmarkDotNet.Artifacts
+
+  load:
+    if: (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.jobs, 'load')) || contains(github.event.head_commit.message, '[load]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ENTRY_REF }}
+          path: entry
+      - name: tools and seed
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sqlite3 jq curl openssl
+          bash seed/make-seed.sh
+          nproc; free -m | head -2; uname -r; grep -m1 "model name" /proc/cpuinfo
+      - name: build the entries
+        run: |
+          rivals="${{ github.event.inputs.rivals || 'rust-iouring-kensac' }}"
+          builds="${{ github.event.inputs.builds || 'aot10: jit10:RUNTIME=jit' }}"
+          sudo bash "$ENTRY/install.sh" > /tmp/install.log 2>&1 || { tail -30 /tmp/install.log; exit 1; }
+          sudo DOTNET_SDK="$SDK11" DOTNET_DIR=/usr/local/dotnet11 bash "$ENTRY/install.sh" > /tmp/install.log 2>&1 || { tail -30 /tmp/install.log; exit 1; }
+          mkdir -p builds sqlite
+          for b in $builds; do
+            label=${b%%:*}; NET=10 RUNTIME=aot PROPS=
+            IFS=, read -r -a settings <<< "${b#*:}"
+            for kv in "${settings[@]}"; do [ -n "$kv" ] && declare "${kv%%=*}=${kv#*=}"; done
+            echo "== $label: .NET $NET, $RUNTIME, ${PROPS:-no more arguments}"
+            cp -r "$ENTRY" "builds/$label"
+            # SQLite is the same in every build of a kind: built once for the static and once for the shared library
+            mkdir -p "builds/$label/native"; cp sqlite/* "builds/$label/native/" 2>/dev/null || true
+            props=${PROPS//+/ }
+            if [ "$NET" = 11 ]; then dotnet=/usr/local/dotnet11/dotnet props="-p:TargetFramework=net11.0 $props"; else dotnet=dotnet; fi
+            start=$(date +%s)
+            RUNTIME=$RUNTIME DOTNET=$dotnet PUBLISH_PROPS=$props bash "builds/$label/build.sh" > /tmp/build.log 2>&1 || { tail -40 /tmp/build.log; exit 1; }
+            cp -n "builds/$label"/native/libsqlite3.* sqlite/
+            printf '%s\t%s s\t%s\t%s MB in bin/app\n' "$label" $(( $(date +%s) - start )) "$(stat -c %s "builds/$label/bin/app/server")" "$(du -sm "builds/$label/bin/app" | cut -f1)" | tee -a /tmp/builds.tsv
+          done
+          for r in $rivals; do
+            echo "== $r"
+            sudo bash "submissions/$r/install.sh" > /tmp/install.log 2>&1 || { tail -30 /tmp/install.log; exit 1; }
+            bash "submissions/$r/build.sh" > /tmp/build.log 2>&1 || { tail -40 /tmp/build.log; exit 1; }
+          done
+      - name: build the load generator
+        run: /usr/local/dotnet/dotnet publish lab/loadgen/loadgen.csproj -c Release -o lab/loadgen/bin/lg -v q
+      - name: startups, then staircases, interleaved
+        run: |
+          levels="${{ github.event.inputs.levels || '40000,80000' }}"
+          rivals="${{ github.event.inputs.rivals || 'rust-iouring-kensac' }}"
+          variants="${{ github.event.inputs.variants || 'aot10:aot10: jit10:jit10:' }}"
+          bash lab/box.sh up
+          mkdir -p lab/out; cp /tmp/builds.tsv lab/out/
+          for start in $(seq "${{ github.event.inputs.starts || '3' }}"); do
+            for v in $variants; do
+              IFS=: read -r label build settings <<< "$v"
+              IFS=, read -r -a settings <<< "$settings"
+              bash lab/load.sh "start-$label-$start" "builds/$build" - 0 0 0 "${settings[@]}" > /dev/null
+            done
+            for r in $rivals; do bash lab/load.sh "start-${r%%-*}-$start" "submissions/$r" - > /dev/null; done
+          done
+          for round in $(seq "${{ github.event.inputs.rounds || '1' }}"); do
+            for v in $variants; do
+              IFS=: read -r label build settings <<< "$v"
+              IFS=, read -r -a settings <<< "$settings"
+              bash lab/load.sh "$label-$round" "builds/$build" "$levels" 4000 20 60 "${settings[@]}"
+            done
+            for r in $rivals; do bash lab/load.sh "${r%%-*}-$round" "submissions/$r" "$levels"; done
+          done
+      - name: results
+        if: always()
+        run: |
+          tab="$(printf '\t')"
+          column -t -s "$tab" lab/out/builds.tsv || true
+          printf 'label\tstart-ms\tstart-cpu-ms\tidleMB\tidle-anonMB\trssMB\tthreads\n' | cat - lab/out/start.tsv | column -t -s "$tab"
+          printf 'label\tusers\treq/s\tp50\tp95\tp99\tmax\terr%%\tapp%%\tapp-us/req\tcpu0%%\tcpu0-us/req\tpeakMB\n' | cat - lab/out/load.tsv | column -t -s "$tab"
+          tail -n 3 lab/out/*-1.server.txt lab/out/*.lg.err 2>/dev/null || true
+          sudo dmesg | grep -iE "conntrack|SYN flood|out of memory|oom" | tail -5 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: load
+          path: lab/out

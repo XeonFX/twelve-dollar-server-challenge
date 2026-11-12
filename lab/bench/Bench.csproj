@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- BenchmarkDotNet over the pieces of csharp-iouring-xeonfx, compiled from the entry's own sources
+       (-p:Entry=folder). Run with SEED_DB set to the seed's feed.db: dotnet run -c Release, then the filter '*'. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Frameworks="net10.0;net11.0" in the environment for the runtime comparison (BENCH_JOBS, see Program.cs) -->
+    <TargetFrameworks Condition="'$(Frameworks)' != ''">$(Frameworks)</TargetFrameworks>
+    <TargetFramework Condition="'$(Frameworks)' == ''">net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <Entry Condition="'$(Entry)' == ''">$(MSBuildThisFileDirectory)../../../twelve-btree/submissions/csharp-iouring-xeonfx</Entry>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(Entry)/*.cs" Exclude="$(Entry)/Program.cs;$(Entry)/JitInterop.cs" LinkBase="entry" />
+    <None Include="aot.targets" CopyToOutputDirectory="PreserveNewest" />
+    <!-- SQLite with its B-tree functions exported, built by ../tests/build-sqlite.sh -->
+    <None Include="../tests/native/libsqlite3.*" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+  </ItemGroup>
+
+</Project>
