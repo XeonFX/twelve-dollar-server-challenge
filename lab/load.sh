@@ -54,4 +54,4 @@ while IFS= read -r line; do
       ;;
   esac
 done
-sudo journalctl -u "$unit" --no-pager -o cat | tail -5 > "$OUT/$label.server.txt" || true
+sudo journalctl -u "$unit" --no-pager -o cat | tail -80 > "$OUT/$label.server.txt" || true
