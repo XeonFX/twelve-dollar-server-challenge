@@ -55,6 +55,50 @@ static unsafe partial class Native
     [LibraryImport("libc")]
     public static partial int usleep(uint microseconds);
 
+    [LibraryImport("libc")]
+    [SuppressGCTransition]
+    private static partial int getrusage(int who, long* usage);
+
+    /// <summary>What the calling thread used so far (getrusage with RUSAGE_THREAD), for the stats line.</summary>
+    public struct ThreadUse
+    {
+        /// <summary>CPU time, user and system, in microseconds.</summary>
+        public long Cpu;
+        /// <summary>Page faults without and with a read from the disk, and 512-byte blocks read from it.</summary>
+        public long MinorFaults, MajorFaults, BlocksIn;
+        /// <summary>Times the thread left the CPU to wait, and times it was taken off it.</summary>
+        public long Waits, Preempted;
+
+        public static ThreadUse operator -(ThreadUse a, ThreadUse b) => new()
+        {
+            Cpu = a.Cpu - b.Cpu, MinorFaults = a.MinorFaults - b.MinorFaults, MajorFaults = a.MajorFaults - b.MajorFaults,
+            BlocksIn = a.BlocksIn - b.BlocksIn, Waits = a.Waits - b.Waits, Preempted = a.Preempted - b.Preempted,
+        };
+
+        public static ThreadUse operator +(ThreadUse a, ThreadUse b) => new()
+        {
+            Cpu = a.Cpu + b.Cpu, MinorFaults = a.MinorFaults + b.MinorFaults, MajorFaults = a.MajorFaults + b.MajorFaults,
+            BlocksIn = a.BlocksIn + b.BlocksIn, Waits = a.Waits + b.Waits, Preempted = a.Preempted + b.Preempted,
+        };
+
+        public override readonly string ToString() =>
+            $"cpu {Cpu / 1000.0:F1} ms waits {Waits} preempted {Preempted} faults {MinorFaults}+{MajorFaults} blocks {BlocksIn}";
+    }
+
+    public static ThreadUse Usage()
+    {
+        // struct rusage on x86-64: two timevals, then 14 longs
+        long* u = stackalloc long[18];
+        new Span<long>(u, 18).Clear();
+        const int RusageThread = 1;
+        if (OperatingSystem.IsLinux()) getrusage(RusageThread, u);
+        return new ThreadUse
+        {
+            Cpu = (u[0] + u[2]) * 1_000_000 + u[1] + u[3], MinorFaults = u[8], MajorFaults = u[9], BlocksIn = u[11],
+            Waits = u[16], Preempted = u[17],
+        };
+    }
+
     /// <summary>Puts the calling thread at the lowest priority (nice 19): it runs when the others leave the CPU.</summary>
     public static void LowPriority() => setpriority(0, (int)syscall(SysGetTid, 0, 0, 0, 0, 0, 0), 19);
 

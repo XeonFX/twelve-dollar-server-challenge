@@ -43,6 +43,10 @@ sealed unsafe class Loop
     long _statAt, _statPasses, _statCqes, _statHandle, _statCommit, _statSend, _statSleep;
     /// <summary>The longest wait, handling, commit and send of one pass since the last line, and when the last pass ended.</summary>
     long _statMaxWait, _statMaxHandle, _statMaxCommit, _statMaxSend, _statEnd;
+    /// <summary>What the thread used while handling and while committing and sending, and in the pass that handled
+    /// longest (with its completions and the checkpoint round's state).</summary>
+    Native.ThreadUse _statHandleUse, _statRestUse, _statLongestUse;
+    string _statLongest = "";
 
     /// <summary>A connection state bit beside <see cref="Ring"/>'s: its next request already got 100 Continue.</summary>
     const byte ContinueSent = 64;
@@ -117,6 +121,8 @@ sealed unsafe class Loop
             _pass++;
             Api.Tick();
             long now = Stopwatch.GetTimestamp();
+            Native.ThreadUse use0 = Stats ? Native.Usage() : default;
+            string state0 = Stats ? Db.State : "";
             Db.CheckpointStep(now / (Stopwatch.Frequency / 1000));
             // writes run only in a pass that commits: once per window, and not while a checkpoint holds them
             bool window = !Db.HoldWrites && now >= _windowAt;
@@ -131,6 +137,7 @@ sealed unsafe class Loop
                 if (room > 0) room -= r.Reap(_cqes, room);
             for (int i = 0; i < _cqes.Count; i++) Handle(_cqes[i]);
             long handled = Stats ? Stopwatch.GetTimestamp() : 0;
+            Native.ThreadUse use1 = Stats ? Native.Usage() : default;
             int handledCount = _cqes.Count;
             int returned = 0;
             foreach (Ring r in _rings)
@@ -190,6 +197,14 @@ sealed unsafe class Loop
                 _statSend += sent - commitEnd;
                 _statSleep += end - sent;
                 if (_statEnd != 0) _statMaxWait = Math.Max(_statMaxWait, now - _statEnd);
+                Native.ThreadUse use2 = Native.Usage();
+                _statHandleUse += use1 - use0;
+                _statRestUse += use2 - use1;
+                if (handled - now > _statMaxHandle)
+                {
+                    _statLongestUse = use1 - use0;
+                    _statLongest = $"{handledCount} cqes, {(window ? "writes" : "no writes")}, {state0}";
+                }
                 _statMaxHandle = Math.Max(_statMaxHandle, handled - now);
                 _statMaxCommit = Math.Max(_statMaxCommit, commitEnd - handled);
                 _statMaxSend = Math.Max(_statMaxSend, sent - commitEnd);
@@ -197,10 +212,11 @@ sealed unsafe class Loop
                 if (end - _statAt >= 2 * Stopwatch.Frequency)
                 {
                     double ms = 1000.0 / Stopwatch.Frequency;
-                    Console.Error.WriteLine($"stats passes {_statPasses} cqes {_statCqes} handle {_statHandle * ms:F0} commit {_statCommit * ms:F0} send {_statSend * ms:F0} sleep {_statSleep * ms:F0} ms of {(end - _statAt) * ms:F0}; longest wait {_statMaxWait * ms:F1} handle {_statMaxHandle * ms:F1} commit {_statMaxCommit * ms:F1} send {_statMaxSend * ms:F1}; carry {_carry.Count} rearm {_rearm.Count} held {_held.Count} {Db.State}");
+                    Console.Error.WriteLine($"stats passes {_statPasses} cqes {_statCqes} handle {_statHandle * ms:F0} commit {_statCommit * ms:F0} send {_statSend * ms:F0} sleep {_statSleep * ms:F0} ms of {(end - _statAt) * ms:F0}; longest wait {_statMaxWait * ms:F1} handle {_statMaxHandle * ms:F1} commit {_statMaxCommit * ms:F1} send {_statMaxSend * ms:F1}; handling {_statHandleUse}; commit and send {_statRestUse}; longest handling {_statLongestUse}, {_statLongest}; carry {_carry.Count} rearm {_rearm.Count} held {_held.Count} {Db.State}");
                     _statAt = end;
                     _statPasses = _statCqes = _statHandle = _statCommit = _statSend = _statSleep = 0;
                     _statMaxWait = _statMaxHandle = _statMaxCommit = _statMaxSend = 0;
+                    _statHandleUse = _statRestUse = _statLongestUse = default;
                 }
             }
             open = 0;
