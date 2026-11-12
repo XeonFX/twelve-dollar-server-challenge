@@ -14,6 +14,7 @@ static unsafe partial class Native
     const int IpProtoTcp = 6, TcpNoDelay = 1, RlimitNoFile = 7;
     public const int ProtRead = 1, ProtWrite = 2, MapShared = 0x01, MapPrivate = 0x02, MapAnonymous = 0x20;
     public const int MapPopulate = 0x8000;
+    public const int OReadOnly = 0, OCloExec = 0x80000, FadvDontNeed = 4;
 
     [LibraryImport("libc", SetLastError = true)]
     public static partial long syscall(long number, long a1, long a2, long a3, long a4, long a5, long a6);
@@ -40,6 +41,12 @@ static unsafe partial class Native
 
     [LibraryImport("libc", SetLastError = true)]
     public static partial int close(int fd);
+
+    [LibraryImport("libc", SetLastError = true)]
+    public static partial int open(byte* path, int flags);
+
+    [LibraryImport("libc")]
+    public static partial int posix_fadvise(int fd, long offset, long length, int advice);
 
     [LibraryImport("libc", SetLastError = true)]
     private static partial int getrlimit(int resource, ulong* limit);

@@ -56,8 +56,8 @@ sealed unsafe class Loop
     /// <summary>Buffers of sends still in flight for connections that closed meanwhile.</summary>
     readonly Dictionary<ulong, byte[]> _zombies = new();
     readonly byte* _waitArg;
-    int _pass, _acceptRing, _holdAt = Db.HoldFrames;
-    long _holdSince, _acceptRetryAt;
+    int _pass, _acceptRing;
+    long _acceptRetryAt;
 
     public Loop(int listenFd)
     {
@@ -94,7 +94,7 @@ sealed unsafe class Loop
             // 2. handle the completions
             _pass++;
             Api.Tick();
-            if (Db.HoldWrites) MaybeResume();
+            if (Db.CheckpointStep(Environment.TickCount64)) ResumeHeld();
             _cqes.Clear();
             int carried = Math.Min(_carry.Count, PassCap);
             for (int i = 0; i < carried; i++) _cqes.Add(_carry[i]);
@@ -121,12 +121,6 @@ sealed unsafe class Loop
 
             // 3. commit, then send
             bool committed = !Db.InTxn || Db.Commit();
-            if (!Db.HoldWrites && Volatile.Read(ref Db.WalFrames) >= _holdAt)
-            {
-                Volatile.Write(ref Db.CaughtUp, false);
-                Volatile.Write(ref Db.HoldWrites, true);
-                _holdSince = Environment.TickCount64;
-            }
             Flush(committed);
             ManageAccept();
             foreach (Ring r in _rings)
@@ -461,19 +455,9 @@ sealed unsafe class Loop
         }
     }
 
-    /// <summary>Ends a write hold once the checkpoint thread copied every frame and started the WAL again (or after
-    /// 500 ms, unless that thread is starting it right now: then the WAL grows on and the next hold comes
-    /// <see cref="Db.HoldFrames"/> later), and answers the held requests in this pass.</summary>
-    void MaybeResume()
+    /// <summary>Answers, in this pass, the writes that waited for a hold to end.</summary>
+    void ResumeHeld()
     {
-        bool caught = Volatile.Read(ref Db.CaughtUp);
-        bool timedOut = !caught && Environment.TickCount64 - _holdSince > 500
-            && Interlocked.CompareExchange(ref Db.RestartGate, 2, 0) == 0;
-        if (!caught && !timedOut) return;
-        _holdAt = caught ? Db.HoldFrames : _holdAt + Db.HoldFrames;
-        Volatile.Write(ref Db.WalFrames, 0);
-        Volatile.Write(ref Db.CaughtUp, false);
-        Volatile.Write(ref Db.HoldWrites, false);
         foreach (var (ri, slot, gen) in _held)
         {
             Ring r = _rings[ri];
@@ -483,7 +467,6 @@ sealed unsafe class Loop
             if ((c.State & (Ring.Live | Ring.Done)) == Ring.Live) Process(r, slot, null, 0);
         }
         _held.Clear();
-        if (timedOut) Volatile.Write(ref Db.RestartGate, 0);
     }
 
     static int Reserve(Ring r) => Math.Min(4096, r.Slots / 4);

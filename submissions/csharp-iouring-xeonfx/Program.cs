@@ -21,13 +21,16 @@ static class Program
         {
             Auth.Init(Env("JWT_SECRET", "twelve-dollar-challenge"));
             string path = Env("SQLITE_PATH", "feed.db");
-            Db.Open(path);
+            // SQLite's page cache: the whole seed (250 MB) fits, so a read never waits for the disk
+            Db.Open(path, int.Parse(Env("CACHE_MB", "256")) * 1024);
+            Db.Warm();
+            Db.StartReads();
             Db.StartCheckpoints();
             string host = Env("HOST", "127.0.0.1");
             int port = int.Parse(Env("PORT", "3000"));
             int fd = Native.Listen(Address(host), port);
             var loop = new Loop(fd);
-            Console.WriteLine($"listening on {host}:{port}, database {path}");
+            Console.WriteLine($"listening on {host}:{port}, database {path}, reads: {(Reads.On ? "B-tree" : "SQL")}");
             loop.Run();
             return 0;
         }

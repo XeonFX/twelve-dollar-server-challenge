@@ -102,41 +102,33 @@ int main(int argc, char **argv)
     sqlite3_stmt *post = prepare(sql);
     snprintf(sql, sizeof sql, "%s ORDER BY p.created_at DESC, p.id DESC LIMIT 20", postSelect);
     sqlite3_stmt *feed = prepare(sql);
-    sqlite3_stmt *feedIds = prepare("SELECT id FROM posts ORDER BY created_at DESC, id DESC LIMIT 20");
-    sqlite3_stmt *feedRange = prepare("SELECT p.id, p.body, p.created_at, u.username FROM posts p "
-        "JOIN users u ON u.id = p.user_id WHERE p.id BETWEEN ?1 AND ?2 ORDER BY p.id DESC");
-    sqlite3_stmt *likeRange = prepare("SELECT post_id, count(*) FROM likes WHERE post_id BETWEEN ?1 AND ?2 GROUP BY post_id");
-    sqlite3_stmt *insertPost = prepare("INSERT INTO posts (user_id, body) VALUES (?1, ?2) RETURNING id, created_at");
-    sqlite3_stmt *insertLike = prepare("INSERT INTO likes (user_id, post_id) SELECT ?1, ?2 "
+    sqlite3_stmt *insertPost = prepare("INSERT INTO posts (user_id, body, created_at) VALUES (?1, ?2, ?3)");
+    sqlite3_stmt *insertLike = prepare("INSERT INTO likes (user_id, post_id, created_at) SELECT ?1, ?2, ?3 "
         "WHERE EXISTS (SELECT 1 FROM posts WHERE id = ?2) ON CONFLICT (user_id, post_id) DO NOTHING");
     sqlite3_stmt *begin = prepare("BEGIN"), *commit = prepare("COMMIT");
 
+    /* The server reads the feed and a post through the B-tree functions that these two queries run on (the first
+     * entries of the feed index, rowid seeks in posts and users, a seek and a walk in the likes index), so the
+     * queries train the same code. */
     long long newest = Posts;
     for (int pass = 0; pass < 3000; pass++) {
+        char at[32];
+        snprintf(at, sizeof at, "2026-01-01T%02d:%02d:%02d.%03dZ", pass / 3600, pass / 60 % 60, pass % 60, pass % 1000);
         run(begin);
         for (int user = 0; user < 40; user++) {
-            /* the feed as the server serves it: the newest 20 ids, then their range, or the plain query */
-            long long hi = 0, lo = 0;
-            int ids = 0;
-            while (sqlite3_step(feedIds) == SQLITE_ROW) {
-                long long id = sqlite3_column_int64(feedIds, 0);
-                if (!ids++) hi = id;
-                lo = id;
-            }
-            sqlite3_reset(feedIds);
-            if (hi - lo < 256) {
-                sqlite3_bind_int64(feedRange, 1, lo), sqlite3_bind_int64(feedRange, 2, hi), run(feedRange);
-                sqlite3_bind_int64(likeRange, 1, lo), sqlite3_bind_int64(likeRange, 2, hi), run(likeRange);
-            } else run(feed);
+            run(feed);
             long long id = rnd() % 4 ? newest - rnd() % 20 : 1 + rnd() % newest;
             sqlite3_bind_int64(post, 1, id), run(post);
-            if (rnd() % 100 < 15)
-                sqlite3_bind_int(insertLike, 1, 1 + rnd() % Users), sqlite3_bind_int64(insertLike, 2, id), run(insertLike);
+            if (rnd() % 100 < 15) {
+                sqlite3_bind_int(insertLike, 1, 1 + rnd() % Users), sqlite3_bind_int64(insertLike, 2, id);
+                sqlite3_bind_text(insertLike, 3, at, 24, SQLITE_STATIC), run(insertLike);
+            }
             if (rnd() % 100 < 2) {
                 char body[96];
                 snprintf(body, sizeof body, "user %u says hi at pass %d", rnd() % Users, pass);
                 sqlite3_bind_int(insertPost, 1, 1 + rnd() % Users);
-                sqlite3_bind_text(insertPost, 2, body, -1, SQLITE_TRANSIENT), run(insertPost);
+                sqlite3_bind_text(insertPost, 2, body, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(insertPost, 3, at, 24, SQLITE_STATIC), run(insertPost);
                 newest++;
             }
         }

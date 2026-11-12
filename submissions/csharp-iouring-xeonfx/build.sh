@@ -14,10 +14,14 @@ if [ ! -f native/libsqlite3.a ]; then
   curl -fsSL "https://www.sqlite.org/2026/$SQLITE.zip" -o native/sqlite.zip
   echo "$SQLITE_SHA256  native/sqlite.zip" | sha256sum -c -
   unzip -q -o -j native/sqlite.zip "$SQLITE/sqlite3.c" "$SQLITE/sqlite3.h" -d native
-  # SQLite's recommended options, but THREADSAFE=2: two connections, each used by one thread at a time. Built for
-  # this CPU and profile-guided: once instrumented, trained on a synthetic database (sqlite-train.c), then again
-  # with the profile.
-  CFLAGS=(-O2 -march=native -fPIC -DSQLITE_DQS=0 -DSQLITE_THREADSAFE=2 -DSQLITE_DEFAULT_MEMSTATUS=0
+  # SQLite's recommended options, but THREADSAFE=2: two connections, each used by one thread at a time.
+  # -DSQLITE_PRIVATE= is the amalgamation's own switch for the linkage of its internal functions: empty, they are
+  # no longer static, so the server can call the B-tree layer (sqlite3Btree*) of the unchanged source. The symbols
+  # stay hidden (they are linked into the one binary), which leaves SQLite's own calls to them direct and inlinable.
+  # Built for this CPU and profile-guided: once instrumented, trained on a synthetic database (sqlite-train.c),
+  # then again with the profile.
+  CFLAGS=(-O2 -march=native -fPIE -fvisibility=hidden -fno-semantic-interposition -DSQLITE_PRIVATE=
+    -DSQLITE_DQS=0 -DSQLITE_THREADSAFE=2 -DSQLITE_DEFAULT_MEMSTATUS=0
     -DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS -DSQLITE_MAX_EXPR_DEPTH=0
     -DSQLITE_OMIT_DECLTYPE -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_PROGRESS_CALLBACK -DSQLITE_OMIT_SHARED_CACHE
     -DSQLITE_OMIT_AUTOINIT -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_USE_ALLOCA)

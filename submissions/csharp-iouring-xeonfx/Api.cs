@@ -25,15 +25,30 @@ static class Api
 
     static readonly byte[] Date = new byte[29];
     static long _dateSecond = -1;
+    /// <summary>The pass's time as the schema's created_at default writes it: UTC "YYYY-MM-DDTHH:MM:SS.mmmZ".
+    /// Pinned: SQLite reads it while an insert runs.</summary>
+    static readonly byte[] Stamp = GC.AllocateArray<byte>(24, pinned: true);
 
-    /// <summary>Formats the Date header again when the second changed. The loop calls it once per pass.</summary>
+    /// <summary>Takes the time for the pass: the Date header (formatted again when the second changed) and the
+    /// created_at of the rows the pass inserts. The loop calls it once per pass.</summary>
     public static void Tick()
     {
         DateTime now = DateTime.UtcNow;
         long s = now.Ticks / TimeSpan.TicksPerSecond;
-        if (s == _dateSecond) return;
-        Utf8Formatter.TryFormat(now, Date, out _, 'R');
-        _dateSecond = s;
+        if (s != _dateSecond)
+        {
+            Utf8Formatter.TryFormat(now, Date, out _, 'R');
+            // 'O' is YYYY-MM-DDTHH:MM:SS.fffffffZ for a UTC time: its first 20 bytes are the stamp's
+            Span<byte> o = stackalloc byte[28];
+            Utf8Formatter.TryFormat(now, o, out _, 'O');
+            o[..20].CopyTo(Stamp);
+            Stamp[23] = (byte)'Z';
+            _dateSecond = s;
+        }
+        int ms = (int)(now.Ticks / TimeSpan.TicksPerMillisecond % 1000);
+        Stamp[20] = (byte)('0' + ms / 100);
+        Stamp[21] = (byte)('0' + ms / 10 % 10);
+        Stamp[22] = (byte)('0' + ms % 10);
     }
 
     static ReadOnlySpan<byte> StatusLine(int status) => status switch
@@ -87,7 +102,7 @@ static class Api
 
     // ---- posts ----
 
-    static void PostObject(long id, ReadOnlySpan<byte> body, ReadOnlySpan<byte> createdAt, ReadOnlySpan<byte> author, long likes)
+    public static void PostObject(long id, ReadOnlySpan<byte> body, ReadOnlySpan<byte> createdAt, ReadOnlySpan<byte> author, long likes)
     {
         Json.Raw("{\"id\":"u8);
         Json.Num(id);
@@ -136,81 +151,24 @@ static class Api
         }
     }
 
-    static readonly long[] FeedIds = new long[20];
-    static readonly long[] FeedLikes = new long[20];
-
     public static void Feed(Arena o, int mode)
     {
         Db.Begin();
-        nint ids = Db.FeedIds;
-        int n = 0;
-        try
-        {
-            while (n < 20 && Db.Row(ids)) FeedIds[n++] = Sqlite.column_int64(ids, 0);
-        }
-        finally
-        {
-            Sqlite.reset(ids);
-        }
-        bool run = n > 0;
-        for (int i = 1; i < n && run; i++) run = FeedIds[i] == FeedIds[i - 1] - 1;
-        if (!run || !FeedByRange(n))
-        {
-            nint st = Db.Feed;
-            try
-            {
-                Json.Raw("{\"posts\":["u8);
-                for (int k = 0; Db.Row(st); k++)
-                {
-                    if (k > 0) Json.Put((byte)',');
-                    PostRow(st);
-                }
-                Json.Raw("]}"u8);
-            }
-            finally
-            {
-                Sqlite.reset(st);
-            }
-        }
+        if (!Reads.On || !Reads.Feed()) FeedSql();
         RespondJson(o, 200, mode);
     }
 
-    /// <summary>The feed when its posts are one run of consecutive ids, newest first (the usual case: posts are
-    /// created in id order): one rowid range scan reads the posts and one range scan of likes_post_id_idx counts all
-    /// their likes, instead of a lookup of each. Same transaction as the id query, so one snapshot. False, with
-    /// nothing written, when the rows do not match the ids (a post whose user is missing).</summary>
-    static bool FeedByRange(int n)
+    /// <summary>The feed as the reference query gives it.</summary>
+    internal static void FeedSql()
     {
-        long hi = FeedIds[0], lo = FeedIds[n - 1];
-        Array.Clear(FeedLikes, 0, n);
-        nint lr = Db.LikeRange;
+        nint st = Db.Feed;
         try
         {
-            Sqlite.bind_int64(lr, 1, lo);
-            Sqlite.bind_int64(lr, 2, hi);
-            while (Db.Row(lr)) FeedLikes[hi - Sqlite.column_int64(lr, 0)] = Sqlite.column_int64(lr, 1);
-        }
-        finally
-        {
-            Sqlite.reset(lr);
-        }
-        nint st = Db.FeedRange;
-        int k = 0;
-        try
-        {
-            Sqlite.bind_int64(st, 1, lo);
-            Sqlite.bind_int64(st, 2, hi);
             Json.Raw("{\"posts\":["u8);
-            while (Db.Row(st))
+            for (int k = 0; Db.Row(st); k++)
             {
-                if (k == n || Sqlite.column_int64(st, 0) != FeedIds[k])
-                {
-                    Json.Clear();
-                    return false;
-                }
                 if (k > 0) Json.Put((byte)',');
-                PostObject(FeedIds[k], Sqlite.Text(st, 1), Sqlite.Text(st, 2), Sqlite.Text(st, 3), FeedLikes[k]);
-                k++;
+                PostRow(st);
             }
             Json.Raw("]}"u8);
         }
@@ -218,35 +176,37 @@ static class Api
         {
             Sqlite.reset(st);
         }
-        if (k == n) return true;
-        Json.Clear();
-        return false;
     }
 
     public static void GetPost(Arena o, int mode, long id)
     {
         Db.Begin();
+        int found = Reads.On ? Reads.GetPost(id) : Reads.UseSql;
+        if (found == Reads.UseSql) found = GetPostSql(id) ? Reads.Found : Reads.Missing;
+        if (found == Reads.Found) RespondJson(o, 200, mode);
+        else Respond(o, 404, mode, PostNotFound);
+    }
+
+    /// <summary>A post as the reference query gives it; false when there is none.</summary>
+    internal static bool GetPostSql(long id)
+    {
         nint st = Db.Post;
         try
         {
             Sqlite.bind_int64(st, 1, id);
-            if (!Db.Row(st))
-            {
-                Respond(o, 404, mode, PostNotFound);
-                return;
-            }
+            if (!Db.Row(st)) return false;
             Json.Raw("{\"post\":"u8);
             PostRow(st);
             Json.Put((byte)'}');
+            return true;
         }
         finally
         {
             Sqlite.reset(st);
         }
-        RespondJson(o, 200, mode);
     }
 
-    public static void Like(Arena o, int mode, long userId, long id)
+    public static unsafe void Like(Arena o, int mode, long userId, long id)
     {
         Db.Begin();
         nint st = Db.InsertLike;
@@ -255,6 +215,8 @@ static class Api
         {
             Sqlite.bind_int64(st, 1, userId);
             Sqlite.bind_int64(st, 2, id);
+            fixed (byte* stamp = Stamp)
+                Sqlite.bind_text(st, 3, stamp, 24, Sqlite.Static);
             if (Sqlite.step(st) != Sqlite.Done) throw new SqliteException(Db.Error);
             inserted = Db.Changes == 1;
         }
@@ -275,6 +237,8 @@ static class Api
 
     static bool PostExists(long id)
     {
+        int found = Reads.On ? Reads.Exists(id) : Reads.UseSql;
+        if (found != Reads.UseSql) return found == Reads.Found;
         nint st = Db.PostExists;
         try
         {
@@ -304,24 +268,63 @@ static class Api
         try
         {
             Sqlite.bind_int64(st, 1, userId);
+            // both stay where they are until the reset below
             fixed (byte* p = body)
-                Sqlite.bind_text(st, 2, p, length, Sqlite.Transient);
-            if (!Db.Row(st)) throw new SqliteException(Db.Error);
-            Json.Raw("{\"post\":"u8);
-            PostObject(Sqlite.column_int64(st, 0), body, Sqlite.Text(st, 1), username, 0);
-            Json.Put((byte)'}');
-            // stepping to DONE finishes the statement; the loop sends the response after the COMMIT
-            if (Sqlite.step(st) != Sqlite.Done)
+            fixed (byte* stamp = Stamp)
             {
-                Json.Clear();
-                throw new SqliteException(Db.Error);
+                Sqlite.bind_text(st, 2, p, length, Sqlite.Static);
+                Sqlite.bind_text(st, 3, stamp, 24, Sqlite.Static);
+                if (Sqlite.step(st) != Sqlite.Done) throw new SqliteException(Db.Error);
             }
         }
         finally
         {
             Sqlite.reset(st);
         }
+        Json.Raw("{\"post\":"u8);
+        PostObject(Db.LastId, body, Stamp, username, 0);
+        Json.Put((byte)'}');
+        // the loop sends the response after the COMMIT
         RespondJson(o, 201, mode);
+    }
+
+    /// <summary>Checks, on the rows the database has at startup, that the B-tree reads write byte for byte what
+    /// the reference queries write: the feed, its posts, posts spread over the whole table and ids that do not
+    /// exist. Null when they do, else what differed.</summary>
+    public static string? SelfTest()
+    {
+        Db.Begin();
+        try
+        {
+            if (!Reads.Feed()) return "the feed is not covered";
+            byte[] feed = Json.Body.Written.ToArray();
+            Json.Clear();
+            FeedSql();
+            bool same = Json.Body.Written.SequenceEqual(feed);
+            Json.Clear();
+            if (!same) return "the feed differs";
+            long max = Db.Scalar("SELECT max(id) FROM posts");
+            var ids = new System.Collections.Generic.List<long>(Db.Column("SELECT id FROM posts ORDER BY created_at DESC, id DESC LIMIT 25"));
+            ids.AddRange([0, 1, 2, max, max + 1, long.MaxValue, -1]);
+            for (long k = 1; k <= 200; k++) ids.Add(max / 200 * k + k % 7);
+            foreach (long id in ids)
+            {
+                int found = Reads.GetPost(id);
+                byte[] post = Json.Body.Written.ToArray();
+                Json.Clear();
+                bool sql = GetPostSql(id);
+                same = found != Reads.UseSql && (found == Reads.Found) == sql && Json.Body.Written.SequenceEqual(post)
+                    && Reads.Exists(id) == found;
+                Json.Clear();
+                if (!same) return $"post {id} differs";
+            }
+            return null;
+        }
+        finally
+        {
+            Json.Clear();
+            Db.Commit();
+        }
     }
 
     /// <summary>JavaScript's String.prototype.trim() set, so bodies are trimmed as the reference servers do.</summary>
