@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Tests of csharp-iouring-xeonfx's database layer, compiled from the entry's own sources (-p:Entry=<folder>). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IsPackable>false</IsPackable>
+    <Entry Condition="'$(Entry)' == ''">$(MSBuildThisFileDirectory)../../../twelve-btree/submissions/csharp-iouring-xeonfx</Entry>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(Entry)/*.cs" Exclude="$(Entry)/Program.cs" LinkBase="entry" />
+    <!-- SQLite with its B-tree functions exported, built by build-sqlite.sh -->
+    <None Include="native/libsqlite3.*" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
+    <None Include="../../schema.sql" CopyToOutputDirectory="PreserveNewest" Link="schema.sql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+</Project>

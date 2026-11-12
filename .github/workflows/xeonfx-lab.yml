@@ -1,0 +1,111 @@
+# The lab for csharp-iouring-xeonfx: its database tests, the challenge's 42 checks, and (with [load] in the commit
+# message or a manual run) a loopback staircase against the entries it is read against.
+name: xeonfx lab
+on:
+  push:
+    branches: [test/xeonfx-lab]
+  workflow_dispatch:
+    inputs:
+      levels:
+        description: users at each step
+        default: "100000,200000"
+      rivals:
+        description: entries to run beside ours
+        default: "fsharp-uring-delneg rust-iouring-kensac"
+permissions:
+  contents: read
+env:
+  ENTRY_REF: perf/csharp-iouring-btree
+  ENTRY: entry/submissions/csharp-iouring-xeonfx
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ENTRY_REF }}
+          path: entry
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: tools and seed
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sqlite3 unzip
+          bash seed/make-seed.sh
+      - name: database tests
+        run: |
+          bash lab/tests/build-sqlite.sh
+          SEED_DB="$PWD/seed/feed.db" dotnet test lab/tests/Tests.csproj -v q -p:Entry="$PWD/$ENTRY"
+
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ENTRY_REF }}
+          path: entry
+      - name: tools and seed
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sqlite3 jq curl openssl
+          bash seed/make-seed.sh
+      - name: install.sh
+        run: sudo bash "$ENTRY/install.sh"
+      - name: build, start, the 42 checks
+        run: bash test/run.sh "$ENTRY"
+      - name: the B-tree reads are on with the seed
+        run: |
+          cp seed/feed.db /tmp/feed.db
+          (JWT_SECRET=x HOST=127.0.0.1 PORT=3999 SQLITE_PATH=/tmp/feed.db timeout 20 bash "$ENTRY/start.sh" > /tmp/server.log 2>&1 || true) &
+          for _ in $(seq 40); do grep -q "listening" /tmp/server.log 2>/dev/null && break; sleep 0.5; done
+          cat /tmp/server.log
+          grep -q "reads: B-tree" /tmp/server.log
+
+  load:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[load]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ENTRY_REF }}
+          path: entry
+      - name: tools and seed
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sqlite3 jq curl openssl
+          bash seed/make-seed.sh
+          nproc; free -m | head -2; uname -r
+      - name: build the entries
+        run: |
+          rivals="${{ github.event.inputs.rivals || 'fsharp-uring-delneg rust-iouring-kensac' }}"
+          for e in "$ENTRY" $(for r in $rivals; do echo submissions/$r; done); do
+            echo "== $e"
+            sudo bash "$e/install.sh" > /tmp/install.log 2>&1 || { tail -30 /tmp/install.log; exit 1; }
+            bash "$e/build.sh" > /tmp/build.log 2>&1 || { tail -40 /tmp/build.log; exit 1; }
+          done
+      - name: build the load generator
+        run: /usr/local/dotnet/dotnet publish lab/loadgen/loadgen.csproj -c Release -o lab/loadgen/bin/lg -v q
+      - name: staircases, interleaved
+        run: |
+          export DOTNET_ROOT=/usr/local/dotnet
+          levels="${{ github.event.inputs.levels || '100000,200000' }}"
+          rivals="${{ github.event.inputs.rivals || 'fsharp-uring-delneg rust-iouring-kensac' }}"
+          for round in 1 2; do
+            bash lab/load.sh "cs-$round" "$ENTRY" "$levels"
+            for r in $rivals; do bash lab/load.sh "${r%%-*}-$round" "submissions/$r" "$levels"; done
+          done
+      - name: results
+        if: always()
+        run: |
+          printf 'label\tusers\treq/s\tp50\tp95\tp99\tmax\terr%%\tcpu%%\tus/req\tpeakMB\n' | cat - lab/out/load.tsv | column -t -s "$(printf '\t')"
+          tail -n 5 lab/out/*.server.txt lab/out/*.lg.err 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: load
+          path: lab/out
