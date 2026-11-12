@@ -43,7 +43,7 @@ permissions:
   contents: read
 env:
   # perf/csharp-iouring-runtimes: the entry at f43b971 with the build options (RUNTIME, DOTNET, PUBLISH_PROPS)
-  ENTRY_REF: 12dba16069f837a943931f976aeb2aab11fd0c25
+  ENTRY_REF: 4f13105a41b0d9426add41121f8f41a0d3c95bec
   ENTRY: entry/submissions/csharp-iouring-xeonfx
   SDK11: 11.0.100
   DOTNET_CLI_TELEMETRY_OPTOUT: 1
@@ -79,8 +79,9 @@ jobs:
       - name: benchmarks
         run: |
           export PATH="/usr/local/dotnet11:$PATH" DOTNET_ROOT=/usr/local/dotnet11 MSBUILDDISABLENODEREUSE=1
-          export Frameworks="net10.0;net11.0"
-          dotnet build lab/bench/Bench.csproj -c Release -v q -p:Entry="$PWD/$ENTRY"
+          # in the environment, so the builds BenchmarkDotNet starts see them too
+          export Frameworks="net10.0;net11.0" Entry="$PWD/$ENTRY"
+          dotnet build lab/bench/Bench.csproj -c Release -v q
           cd lab/bench
           export SEED_DB="$GITHUB_WORKSPACE/seed/feed.db" AOT_SQLITE="$GITHUB_WORKSPACE/$ENTRY/native/libsqlite3.a"
           export GROWN="${{ github.event.inputs.grown || '0' }}"
@@ -88,8 +89,9 @@ jobs:
           # shellcheck disable=SC2086
           dotnet bin/Release/net10.0/Bench.dll --filter ${{ github.event.inputs.bench_filter || '*Pieces.Feed *Pieces.Post *Pieces.Like *Pieces.Create *Pieces.Mix' }} > /tmp/bench.log 2>&1 || { tail -80 /tmp/bench.log; exit 1; }
           grep -E "ILCompiler|Microsoft.NETCore.App.Runtime|error" /tmp/bench.log | sort -u | head -20 || true
-          cat BenchmarkDotNet.Artifacts/results/*-report-github.md
           cp /tmp/bench.log BenchmarkDotNet.Artifacts/
+          cat BenchmarkDotNet.Artifacts/results/*-report-github.md
+          if grep -q "| *NA |" BenchmarkDotNet.Artifacts/results/*-report-github.md; then grep -B2 -A12 -m3 "error" /tmp/bench.log | cut -c1-400; exit 1; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -127,11 +129,12 @@ jobs:
             # SQLite is the same in every build of a kind: built once for the static and once for the shared library
             mkdir -p "builds/$label/native"; cp sqlite/* "builds/$label/native/" 2>/dev/null || true
             props=${PROPS//+/ }
-            if [ "$NET" = 11 ]; then dotnet=/usr/local/dotnet11/dotnet props="-p:TargetFramework=net11.0 $props"; else dotnet=dotnet; fi
+            if [ "$NET" = 11 ]; then dotnet=/usr/local/dotnet11/dotnet props="-p:ServerFramework=net11.0 $props"; else dotnet=dotnet; fi
             start=$(date +%s)
             RUNTIME=$RUNTIME DOTNET=$dotnet PUBLISH_PROPS=$props bash "builds/$label/build.sh" > /tmp/build.log 2>&1 || { tail -40 /tmp/build.log; exit 1; }
-            cp -n "builds/$label"/native/libsqlite3.* sqlite/
-            printf '%s\t%s s\t%s\t%s MB in bin/app\n' "$label" $(( $(date +%s) - start )) "$(stat -c %s "builds/$label/bin/app/server")" "$(du -sm "builds/$label/bin/app" | cut -f1)" | tee -a /tmp/builds.tsv
+            cp --update=none "builds/$label"/native/libsqlite3.* sqlite/
+            dll=$(stat -c %s "builds/$label/bin/app/server.dll" 2>/dev/null || echo 0)
+            printf '%s\t%s s to build\tserver %s bytes\tserver.dll %s bytes\n' "$label" $(( $(date +%s) - start )) "$(stat -c %s "builds/$label/bin/app/server")" "$dll" | tee -a /tmp/builds.tsv
           done
           for r in $rivals; do
             echo "== $r"
