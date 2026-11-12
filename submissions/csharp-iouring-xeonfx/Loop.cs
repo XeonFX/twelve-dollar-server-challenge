@@ -38,6 +38,10 @@ sealed unsafe class Loop
     /// between read in the transaction that is open: nothing else writes, so they read what is committed, and
     /// their responses go out at once.</summary>
     static readonly long WindowTicks = Knob("WINDOW_MS", 0) * Stopwatch.Frequency / 1000;
+    /// <summary>STATS=1 (for measuring): a line on stderr every two seconds with where the passes' time went.</summary>
+    static readonly bool Stats = Knob("STATS", 0) != 0;
+    long _statAt, _statPasses, _statCqes, _statHandle, _statCommit, _statSend, _statSleep;
+
     /// <summary>A connection state bit beside <see cref="Ring"/>'s: its next request already got 100 Continue.</summary>
     const byte ContinueSent = 64;
     /// <summary>The bits of a user_data that name a (ring, slot, generation).</summary>
@@ -124,6 +128,8 @@ sealed unsafe class Loop
             foreach (Ring r in _rings)
                 if (room > 0) room -= r.Reap(_cqes, room);
             for (int i = 0; i < _cqes.Count; i++) Handle(_cqes[i]);
+            long handled = Stats ? Stopwatch.GetTimestamp() : 0;
+            int handledCount = _cqes.Count;
             int returned = 0;
             foreach (Ring r in _rings)
             {
@@ -145,6 +151,7 @@ sealed unsafe class Loop
             bool committed = true;
             if (Db.InTxn && (window || Db.HoldWrites || _cqes.Count == 0)) committed = Db.Commit();
             if (window) _windowAt = now + WindowTicks;
+            long commitEnd = Stats ? Stopwatch.GetTimestamp() : 0;
             Flush(committed);
             ManageAccept();
             foreach (Ring r in _rings)
@@ -169,7 +176,25 @@ sealed unsafe class Loop
             _recordCount = 0;
             // the checkpoint thread runs only when this one sleeps
             uint giveWay = Db.GiveWay;
+            long sent = Stats ? Stopwatch.GetTimestamp() : 0;
             if (giveWay != 0) Native.usleep(giveWay);
+            if (Stats)
+            {
+                long end = Stopwatch.GetTimestamp();
+                _statPasses++;
+                _statCqes += handledCount;
+                _statHandle += handled - now;
+                _statCommit += commitEnd - handled;
+                _statSend += sent - commitEnd;
+                _statSleep += end - sent;
+                if (end - _statAt >= 2 * Stopwatch.Frequency)
+                {
+                    double ms = 1000.0 / Stopwatch.Frequency;
+                    Console.Error.WriteLine($"stats passes {_statPasses} cqes {_statCqes} handle {_statHandle * ms:F0} commit {_statCommit * ms:F0} send {_statSend * ms:F0} sleep {_statSleep * ms:F0} ms of {(end - _statAt) * ms:F0}; carry {_carry.Count} rearm {_rearm.Count} held {_held.Count} {Db.State}");
+                    _statAt = end;
+                    _statPasses = _statCqes = _statHandle = _statCommit = _statSend = _statSleep = 0;
+                }
+            }
             open = 0;
             foreach (Ring r in _rings) open += r.Open;
         }

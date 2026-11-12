@@ -246,6 +246,7 @@ static unsafe class Db
             case Idle:
                 if (_walFrames < CheckpointFrames) return false;
                 Ask(1);
+                _rounds++;
                 _phase = Copying;
                 return false;
             case Copying:
@@ -269,6 +270,7 @@ static unsafe class Db
                 Volatile.Write(ref HoldWrites, false);
                 Volatile.Write(ref _gate, 0);
                 _phase = Abandoned;
+                _abandoned++;
                 return true;
             default:
                 if (Finished()) _phase = Idle;
@@ -278,7 +280,14 @@ static unsafe class Db
 
     /// <summary>How long the loop should sleep after this pass so that the checkpoint thread runs, in microseconds:
     /// a little while writes are held for it, more when the WAL is far too long, else nothing.</summary>
-    public static uint GiveWay => HoldWrites ? 200u : _phase != Idle && _walFrames >= CrowdedFrames ? 1000u : 0u;
+    public static uint GiveWay => !GiveWayOn ? 0u : HoldWrites ? 200u : _phase != Idle && _walFrames >= CrowdedFrames ? 1000u : 0u;
+
+    // for measuring: GIVE_WAY=0 never sleeps for the checkpoint thread, CHECKPOINT_NICE=0 leaves it at normal priority
+    static readonly bool GiveWayOn = Loop.Knob("GIVE_WAY", 1) != 0;
+    static int _rounds, _abandoned;
+
+    /// <summary>The checkpoint round's state, for the loop's STATS line.</summary>
+    public static string State => $"wal {_walFrames} phase {_phase} rounds {_rounds} abandoned {_abandoned}";
 
     static void Ask(int what)
     {
@@ -328,7 +337,7 @@ static unsafe class Db
 
     static void CheckpointLoop(nint cdb, byte[] restart, byte[] rollback, int fd)
     {
-        if (OperatingSystem.IsLinux()) Native.LowPriority();
+        if (OperatingSystem.IsLinux() && Loop.Knob("CHECKPOINT_NICE", 1) != 0) Native.LowPriority();
         while (true)
         {
             Wake.WaitOne();
