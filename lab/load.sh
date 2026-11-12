@@ -43,12 +43,14 @@ while IFS= read -r line; do
   case "$line" in
     HOLD*) u0=$(usage); b0=$(busy); t0=$(date +%s.%N)
       # PROFILE=1: where CPU 0's time goes for 15 s of the hold, kernel and entry together
-      if [ "${PROFILE:-}" = 1 ] && [ ! -e "$OUT/$label.perf.data" ]; then
-        (sleep 10; sudo perf record -q -C 0 -F 1999 -g -o "$OUT/$label.perf.data" -- sleep 15 > /dev/null 2>&1
-         sudo perf report -i "$OUT/$label.perf.data" --no-children --sort dso,symbol --stdio 2>/dev/null | grep -v "^$" | grep -E "^ +[0-9.]+%" | head -70 > "$OUT/$label.perf.txt"
-         sudo perf report -i "$OUT/$label.perf.data" --no-children --sort dso --stdio 2>/dev/null | grep -E "^ +[0-9.]+%" | head -12 > "$OUT/$label.perf-dso.txt"
-         sudo perf report -i "$OUT/$label.perf.data" --no-children --sort symbol --stdio -G 2>/dev/null | grep -v "^$" | head -260 > "$OUT/$label.perf-callers.txt"
-         sudo rm -f "$OUT/$label.perf.data") &
+      if [ "${PROFILE:-}" = 1 ] && [ ! -e "$OUT/$label.perf.txt" ]; then
+        : > "$OUT/$label.perf.txt"
+        (sleep 10; pd=/tmp/$label.perf.data
+         sudo perf record -q -C 0 -F 1999 -g -o "$pd" -- sleep 15 > /dev/null 2>&1
+         sudo perf report -i "$pd" --no-children --sort dso,symbol --stdio -g none 2>/dev/null | awk '/^ +[0-9.]+%/' | sed -n 1,70p > "$OUT/$label.perf.txt"
+         sudo perf report -i "$pd" --no-children --sort dso --stdio -g none 2>/dev/null | awk '/^ +[0-9.]+%/' | sed -n 1,12p > "$OUT/$label.perf-dso.txt"
+         sudo perf report -i "$pd" --no-children --sort symbol --stdio -g caller,0.5,callee --percent-limit 4 2>/dev/null | awk 'NF' | sed -n 1,220p > "$OUT/$label.perf-callers.txt"
+         sudo rm -f "$pd"; touch "$OUT/$label.perf.done") &
       fi ;;
     all*) all=$line ;;
     DONE*)
@@ -62,4 +64,5 @@ while IFS= read -r line; do
       ;;
   esac
 done
+if [ "${PROFILE:-}" = 1 ]; then for _ in $(seq 240); do [ -e "$OUT/$label.perf.done" ] && break; sleep 1; done; fi
 sudo journalctl -u "$unit" --no-pager -o cat | tail -80 > "$OUT/$label.server.txt" || true
