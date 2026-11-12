@@ -6,5 +6,6 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl unzip gcc libc6-dev clang binutils zlib1g-dev
 curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
-bash /tmp/dotnet-install.sh --version 10.0.402 --install-dir /usr/local/dotnet
-ln -sf /usr/local/dotnet/dotnet /usr/local/bin/dotnet
+# DOTNET_SDK and DOTNET_DIR are for measuring another SDK beside the pinned one
+bash /tmp/dotnet-install.sh --version "${DOTNET_SDK:-10.0.402}" --install-dir "${DOTNET_DIR:-/usr/local/dotnet}"
+[ -n "${DOTNET_DIR:-}" ] || ln -sf /usr/local/dotnet/dotnet /usr/local/bin/dotnet
