@@ -16,8 +16,10 @@
    caps a ring, not the server: the thread opens up to 8 rings of 65,535 slots and moves accept to the next one
    before a table fills (a full table makes the kernel drop the socket it just accepted).
 2. Each connection has one multishot receive into a ring of 8,192 provided 2 KB buffers
-   (`IORING_REGISTER_PBUF_RING`, or `IORING_OP_PROVIDE_BUFFERS` when the kernel refuses it, as the scorer's
-   6.8.0-147 does). A connection that thinks between requests holds no buffer. Each accepted socket gets
+   (`IORING_REGISTER_PBUF_RING`). Ubuntu's 6.8.0-136 and later refuse that registration when its reserved words
+   are zero ([Launchpad #2162843](https://bugs.launchpad.net/ubuntu/+source/linux/+bug/2162843), an inverted
+   check), so a refused one is tried once more with `resv[0]=1`; a kernel that refuses both gets its buffers through
+   `IORING_OP_PROVIDE_BUFFERS`. A connection that thinks between requests holds no buffer. Each accepted socket gets
    `TCP_QUICKACK=0` through `IORING_OP_URING_CMD` (kernel 6.7 and up), so a request is acked by its response, not
    by a packet of its own after each think time.
 3. The thread waits for 256 completions or 8 ms, handles at most 1,024 completions (the rest wait for the next

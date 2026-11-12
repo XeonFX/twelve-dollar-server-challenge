@@ -148,12 +148,20 @@ sealed unsafe class Ring
         *(ulong*)reg = (ulong)_bufRing;
         *(uint*)(reg + 8) = (uint)BufferCount;
         *(ushort*)(reg + 12) = BufferGroup;
-        // Ubuntu's 6.8.0-147 answers EINVAL to every buffer ring (7.0 takes them)
-        _legacy = Native.syscall(Native.SysIoUringRegister, Fd, RegisterPbufRing, (long)reg, 1, 0, 0) < 0;
+        // LEGACY_BUFFERS=1 (for measuring) skips the ring, as a kernel that refuses it would
+        bool skip = Loop.Knob("LEGACY_BUFFERS", 0) != 0;
+        _legacy = skip || Native.syscall(Native.SysIoUringRegister, Fd, RegisterPbufRing, (long)reg, 1, 0, 0) < 0;
+        if (_legacy && !skip && Native.Errno == Native.EInval)
+        {
+            // Ubuntu's 6.8.0-136 and later check the reserved words the wrong way round (Launchpad #2162843): they
+            // refuse all zeroes and take a nonzero resv[0]. A correct kernel took the ring above and never gets here.
+            *(ulong*)(reg + 16) = 1;
+            _legacy = Native.syscall(Native.SysIoUringRegister, Fd, RegisterPbufRing, (long)reg, 1, 0, 0) < 0;
+        }
         if (_legacy)
         {
-            int errno = Native.Errno; // before Console.Error, whose first use makes calls of its own
-            if (index == 0) Console.Error.WriteLine($"io_uring buffer ring refused (errno {errno}): using IORING_OP_PROVIDE_BUFFERS");
+            int errno = skip ? 0 : Native.Errno; // before Console.Error, whose first use makes calls of its own
+            if (index == 0) Console.Error.WriteLine($"io_uring buffer ring {(skip ? "skipped" : $"refused (errno {errno})")}: using IORING_OP_PROVIDE_BUFFERS");
             Provide(0, BufferCount);
         }
         else

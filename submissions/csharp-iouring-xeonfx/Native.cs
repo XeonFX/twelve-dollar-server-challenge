@@ -8,7 +8,7 @@ using System.Runtime.InteropServices;
 static unsafe partial class Native
 {
     // the values of Linux's headers on x86-64
-    public const int EAgain = 11, EIntr = 4, ENoBufs = 105, ECanceled = 125;
+    public const int EAgain = 11, EIntr = 4, EInval = 22, ENoBufs = 105, ECanceled = 125;
     public const long SysIoUringSetup = 425, SysIoUringEnter = 426, SysIoUringRegister = 427;
     const long SysGetTid = 186;
     const int AfInet = 2, SockStream = 1, SockCloExec = 0x80000, SolSocket = 1, SoReuseAddr = 2, SoReusePort = 15;
