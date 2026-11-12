@@ -73,6 +73,45 @@ public class Bench(ITestOutputHelper output)
                 }
                 output.WriteLine($"{what,-7} {best,8:F0} ns/request");
             }
+            // the parts of a feed, alone
+            unsafe
+            {
+                byte[] body = Bytes("user_00006 says hi at 2026-11-12T05:00:00.000Z (VU 6, iter 12)"), created = Bytes("2026-11-12T05:00:00.000Z"), author = Bytes("user_00006");
+                fixed (byte* b = body)
+                fixed (byte* c = created)
+                fixed (byte* a = author)
+                {
+                    var w = Stopwatch.StartNew();
+                    for (int round = 0; round < 3; round++)
+                    {
+                    w.Restart();
+                    for (int i = 0; i < 200_000; i++)
+                    {
+                        Json.Out = o;
+                        o.Length = 0;
+                        for (int k = 0; k < 20; k++) Json.Post(500_000 - k, b, body.Length, c, created.Length, a, author.Length, k % 3);
+                    }
+                    }
+                    output.WriteLine($"20 post objects {w.ElapsedTicks * 1e9 / Stopwatch.Frequency / 200_000,8:F0} ns");
+                }
+                var w2 = Stopwatch.StartNew();
+                for (int round = 0; round < 3; round++)
+                {
+                w2.Restart();
+                for (int p = 0; p < 3000; p++)
+                {
+                    Db.Begin();
+                    for (int i = 0; i < 64; i++)
+                    {
+                        Json.Out = o;
+                        o.Length = 0;
+                        Reads.Feed();
+                    }
+                    Db.Commit();
+                }
+                }
+                output.WriteLine($"Reads.Feed      {w2.ElapsedTicks * 1e9 / Stopwatch.Frequency / (3000 * 64),8:F0} ns");
+            }
         }
         finally
         {

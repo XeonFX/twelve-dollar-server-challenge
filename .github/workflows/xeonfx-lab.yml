@@ -45,7 +45,7 @@ jobs:
       - name: database tests
         run: |
           bash lab/tests/build-sqlite.sh
-          SEED_DB="$PWD/seed/feed.db" dotnet test lab/tests/Tests.csproj -v q -p:Entry="$PWD/$ENTRY"
+          SEED_DB="$PWD/seed/feed.db" dotnet test lab/tests/Tests.csproj -p:Entry="$PWD/$ENTRY" --logger "console;verbosity=normal"
 
   checks:
     runs-on: ubuntu-24.04
