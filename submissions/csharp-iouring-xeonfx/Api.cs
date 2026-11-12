@@ -93,28 +93,60 @@ static class Api
         o.Length += i + body.Length;
     }
 
-    /// <summary>Sends the JSON body written so far, and clears it.</summary>
-    static void RespondJson(Arena o, int status, int mode)
+    // "Content-Length: " and room for 7 digits, right-aligned: the head is written before the body
+    const int LengthRoom = 7;
+
+    /// <summary>Starts a response whose JSON body is written next, straight after its head (<see cref="Json"/>
+    /// writes there from now on). Returns where the body starts, for <see cref="End"/>.</summary>
+    static int Start(Arena o, int status, int mode)
     {
-        Respond(o, status, mode, Json.Body.Written);
-        Json.Clear();
+        Json.Out = o;
+        ReadOnlySpan<byte> line = StatusLine(status);
+        Span<byte> d = o.Reserve(line.Length + 160);
+        line.CopyTo(d);
+        int i = line.Length;
+        "Content-Type: application/json\r\nDate: "u8.CopyTo(d[i..]);
+        i += 38;
+        Date.CopyTo(d[i..]);
+        i += 29;
+        if (mode == Close)
+        {
+            "\r\nConnection: close"u8.CopyTo(d[i..]);
+            i += 19;
+        }
+        else if (mode == KeepAlive)
+        {
+            "\r\nConnection: keep-alive"u8.CopyTo(d[i..]);
+            i += 24;
+        }
+        "\r\nContent-Length:        \r\n\r\n"u8.CopyTo(d[i..]);
+        i += 18 + LengthRoom + 4;
+        o.Length += i;
+        return o.Length;
+    }
+
+    /// <summary>Ends the response whose body started at <paramref name="body"/>: fills in its length.</summary>
+    static void End(Arena o, int body)
+    {
+        int length = o.Length - body;
+        Span<byte> digits = o.Array.AsSpan(body - 4 - LengthRoom, LengthRoom);
+        int at = LengthRoom;
+        do
+        {
+            digits[--at] = (byte)('0' + length % 10);
+            length /= 10;
+        } while (length > 0 && at > 0);
+        if (length > 0) throw new InvalidOperationException("response body too long");
     }
 
     // ---- posts ----
 
-    public static void PostObject(long id, ReadOnlySpan<byte> body, ReadOnlySpan<byte> createdAt, ReadOnlySpan<byte> author, long likes)
+    public static unsafe void PostObject(long id, ReadOnlySpan<byte> body, ReadOnlySpan<byte> createdAt, ReadOnlySpan<byte> author, long likes)
     {
-        Json.Raw("{\"id\":"u8);
-        Json.Num(id);
-        Json.Raw(",\"body\":"u8);
-        Json.Str(body);
-        Json.Raw(",\"created_at\":"u8);
-        Json.Str(createdAt);
-        Json.Raw(",\"author\":"u8);
-        Json.Str(author);
-        Json.Raw(",\"like_count\":"u8);
-        Json.Num(likes);
-        Json.Put((byte)'}');
+        fixed (byte* b = body)
+        fixed (byte* c = createdAt)
+        fixed (byte* a = author)
+            Json.Post(id, b, body.Length, c, createdAt.Length, a, author.Length, likes);
     }
 
     /// <summary>A row of id, body, created_at, username, like count.</summary>
@@ -125,6 +157,7 @@ static class Api
 
     public static void Health(Arena o, int mode)
     {
+        int head = o.Length;
         try
         {
             Db.Begin();
@@ -136,26 +169,29 @@ static class Api
             {
                 Sqlite.reset(Db.Ping);
             }
+            int body = Start(o, 200, mode);
             Json.Raw("{\"status\":\"ok\",\"db\":\"ok\",\"uptime_s\":"u8);
             Json.Num((Environment.TickCount64 - StartedAt) / 1000);
             Json.Put((byte)'}');
-            RespondJson(o, 200, mode);
+            End(o, body);
         }
         catch (Exception e)
         {
-            Json.Clear();
+            o.Length = head;
+            int body = Start(o, 503, mode);
             Json.Raw("{\"status\":\"degraded\",\"db\":\"unreachable\",\"error\":"u8);
             Json.Str(Encoding.UTF8.GetBytes(e.Message));
             Json.Put((byte)'}');
-            RespondJson(o, 503, mode);
+            End(o, body);
         }
     }
 
     public static void Feed(Arena o, int mode)
     {
         Db.Begin();
+        int body = Start(o, 200, mode);
         if (!Reads.On || !Reads.Feed()) FeedSql();
-        RespondJson(o, 200, mode);
+        End(o, body);
     }
 
     /// <summary>The feed as the reference query gives it.</summary>
@@ -181,10 +217,17 @@ static class Api
     public static void GetPost(Arena o, int mode, long id)
     {
         Db.Begin();
+        int head = o.Length;
+        int body = Start(o, 200, mode);
         int found = Reads.On ? Reads.GetPost(id) : Reads.UseSql;
         if (found == Reads.UseSql) found = GetPostSql(id) ? Reads.Found : Reads.Missing;
-        if (found == Reads.Found) RespondJson(o, 200, mode);
-        else Respond(o, 404, mode, PostNotFound);
+        if (found == Reads.Found)
+        {
+            End(o, body);
+            return;
+        }
+        o.Length = head;
+        Respond(o, 404, mode, PostNotFound);
     }
 
     /// <summary>A post as the reference query gives it; false when there is none.</summary>
@@ -229,10 +272,11 @@ static class Api
             Respond(o, 404, mode, PostNotFound);
             return;
         }
+        int body = Start(o, inserted ? 201 : 200, mode);
         Json.Raw(inserted ? "{\"liked\":true,\"already_liked\":false,\"post_id\":"u8 : "{\"liked\":true,\"already_liked\":true,\"post_id\":"u8);
         Json.Num(id);
         Json.Put((byte)'}');
-        RespondJson(o, inserted ? 201 : 200, mode);
+        End(o, body);
     }
 
     static bool PostExists(long id)
@@ -281,11 +325,12 @@ static class Api
         {
             Sqlite.reset(st);
         }
+        // the loop sends the response after the COMMIT
+        int start = Start(o, 201, mode);
         Json.Raw("{\"post\":"u8);
         PostObject(Db.LastId, body, Stamp, username, 0);
         Json.Put((byte)'}');
-        // the loop sends the response after the COMMIT
-        RespondJson(o, 201, mode);
+        End(o, start);
     }
 
     /// <summary>Checks, on the rows the database has at startup, that the B-tree reads write byte for byte what
@@ -293,16 +338,21 @@ static class Api
     /// exist. Null when they do, else what differed.</summary>
     public static string? SelfTest()
     {
+        var scratch = new Arena(1 << 16);
+        Json.Out = scratch;
+        byte[] Take()
+        {
+            byte[] written = scratch.Written.ToArray();
+            scratch.Length = 0;
+            return written;
+        }
         Db.Begin();
         try
         {
             if (!Reads.Feed()) return "the feed is not covered";
-            byte[] feed = Json.Body.Written.ToArray();
-            Json.Clear();
+            byte[] feed = Take();
             FeedSql();
-            bool same = Json.Body.Written.SequenceEqual(feed);
-            Json.Clear();
-            if (!same) return "the feed differs";
+            if (!Take().AsSpan().SequenceEqual(feed)) return "the feed differs";
             long max = Db.Scalar("SELECT max(id) FROM posts");
             var ids = new System.Collections.Generic.List<long>(Db.Column("SELECT id FROM posts ORDER BY created_at DESC, id DESC LIMIT 25"));
             ids.AddRange([0, 1, 2, max, max + 1, long.MaxValue, -1]);
@@ -310,19 +360,15 @@ static class Api
             foreach (long id in ids)
             {
                 int found = Reads.GetPost(id);
-                byte[] post = Json.Body.Written.ToArray();
-                Json.Clear();
+                byte[] post = Take();
                 bool sql = GetPostSql(id);
-                same = found != Reads.UseSql && (found == Reads.Found) == sql && Json.Body.Written.SequenceEqual(post)
-                    && Reads.Exists(id) == found;
-                Json.Clear();
-                if (!same) return $"post {id} differs";
+                if (found == Reads.UseSql || (found == Reads.Found) != sql || !Take().AsSpan().SequenceEqual(post) || Reads.Exists(id) != found)
+                    return $"post {id} differs";
             }
             return null;
         }
         finally
         {
-            Json.Clear();
             Db.Commit();
         }
     }

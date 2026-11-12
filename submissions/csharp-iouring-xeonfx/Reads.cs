@@ -315,6 +315,7 @@ static unsafe class Reads
                 if (!CountLikes(lc, ids[i], ids[i], counts + i)) return false;
             }
         }
+        int start = Json.Out.Length;
         Json.Raw("{\"posts\":["u8);
         Row row = default;
         for (int i = 0; i < n; i++)
@@ -324,11 +325,11 @@ static unsafe class Reads
             if (pc == null || uc == null || Sqlite.BtreeTableMoveto(pc, ids[i], 0, &miss) != Sqlite.Ok || miss != 0
                 || !PostAndAuthor(pc, uc, ref row))
             {
-                Json.Clear();
+                Json.Out.Length = start;
                 return false;
             }
             if (i > 0) Json.Put((byte)',');
-            Write(ids[i], in row, counts[i]);
+            Json.Post(ids[i], row.Body, row.BodyLength, row.Created, row.CreatedLength, row.Author, row.AuthorLength, counts[i]);
         }
         Json.Raw("]}"u8);
         return true;
@@ -348,7 +349,7 @@ static unsafe class Reads
         long count = 0;
         if (!PostAndAuthor(pc, uc, ref row) || !CountLikes(lc, id, id, &count)) return UseSql;
         Json.Raw("{\"post\":"u8);
-        Write(id, in row, count);
+        Json.Post(id, row.Body, row.BodyLength, row.Created, row.CreatedLength, row.Author, row.AuthorLength, count);
         Json.Put((byte)'}');
         return Found;
     }
@@ -363,9 +364,4 @@ static unsafe class Reads
         if (pc == null || Sqlite.BtreeTableMoveto(pc, id, 0, &miss) != Sqlite.Ok) return UseSql;
         return miss == 0 ? Found : Missing;
     }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    static void Write(long id, in Row row, long likes) =>
-        Api.PostObject(id, new ReadOnlySpan<byte>(row.Body, row.BodyLength), new ReadOnlySpan<byte>(row.Created, row.CreatedLength),
-            new ReadOnlySpan<byte>(row.Author, row.AuthorLength), likes);
 }

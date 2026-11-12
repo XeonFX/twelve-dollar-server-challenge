@@ -112,13 +112,14 @@ static class Http
                 flags |= Held;
                 return off;
             }
+            int start = o.Length;
             try
             {
                 Route(o, mode, post, method, path, auth, rest.Slice(headEnd + 4, (int)contentLength));
             }
             catch (Exception)
             {
-                Json.Clear();
+                o.Length = start; // drops what the handler had written
                 Api.Respond(o, 500, mode, Api.Internal);
             }
             off += total;

@@ -167,6 +167,9 @@ sealed unsafe class Loop
             }
             _out.Length = 0;
             _recordCount = 0;
+            // the checkpoint thread runs only when this one sleeps
+            uint giveWay = Db.GiveWay;
+            if (giveWay != 0) Native.usleep(giveWay);
             open = 0;
             foreach (Ring r in _rings) open += r.Open;
         }
@@ -279,7 +282,6 @@ sealed unsafe class Loop
         {
             Console.Error.WriteLine($"request: {ex.Message}");
             _out.Length = before;
-            Json.Clear();
             CloseSlot(r, slot);
             return;
         }

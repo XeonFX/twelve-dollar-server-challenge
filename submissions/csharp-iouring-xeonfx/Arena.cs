@@ -31,6 +31,15 @@ sealed unsafe class Arena(int initial)
         _buf = bigger;
     }
 
+    /// <summary>Room for at least <paramref name="n"/> more bytes: the address of the first, valid until the arena
+    /// grows.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public byte* Room(int n)
+    {
+        if (_buf.Length - Length < n) Grow(n);
+        return Address(Length);
+    }
+
     public void Write(ReadOnlySpan<byte> s)
     {
         s.CopyTo(Reserve(s.Length));

@@ -11,12 +11,14 @@ using System.Threading;
 /// (synchronous=NORMAL).</para>
 /// <para>Both connections use SQLite's unix-excl VFS: the process locks the file once and keeps it, and the WAL
 /// index is memory the two connections share (no -shm file, no file lock per transaction).</para>
-/// <para>Checkpoints run on the checkpoint thread, so their fsync calls never stop the loop. A round starts when
-/// the WAL passes <see cref="CheckpointFrames"/>: first a PASSIVE checkpoint while writes go on, then the loop holds
-/// writes (a POST waits in its connection's input, reads go on) while the thread copies the frames that came
-/// meanwhile and starts the WAL again with a write of its own. The first frame of a new WAL fsyncs its header, and
-/// that wait belongs on the checkpoint thread too. A hold ends after <see cref="HoldMs"/> at the latest; the WAL
-/// then grows on and the next round tries again.</para>
+/// <para>Checkpoints run on the checkpoint thread, at the lowest priority, so neither their copying nor their fsync
+/// calls take the CPU from the loop. A round starts when the WAL passes <see cref="CheckpointFrames"/>: first a
+/// PASSIVE checkpoint while writes go on, then the loop holds writes (a POST waits in its connection's input, reads
+/// go on) while the thread copies the frames that came meanwhile and starts the WAL again with a write of its own.
+/// The first frame of a new WAL fsyncs its header, and that wait belongs on the checkpoint thread too. A hold ends
+/// after <see cref="HoldMs"/> at the latest; the WAL then grows on and the next round tries again. The loop gives
+/// the thread a little of its time while writes wait for it (<see cref="GiveWay"/>), and whenever the WAL is far
+/// past a round's size.</para>
 /// </summary>
 static unsafe class Db
 {
@@ -24,6 +26,9 @@ static unsafe class Db
     /// enough that a round's fsync has little to write.</summary>
     const int CheckpointFrames = 4096;
     const int HoldMs = 250;
+    /// <summary>Past this many WAL frames (128 MB) the loop makes room for the checkpoint thread in every pass: on
+    /// a full CPU that thread would never run, and the WAL would grow until writes stall on the page cache.</summary>
+    const int CrowdedFrames = 8 * CheckpointFrames;
     const int Idle = 0, Copying = 1, Finishing = 2, Abandoned = 3;
 
     static nint _db;
@@ -271,6 +276,10 @@ static unsafe class Db
         }
     }
 
+    /// <summary>How long the loop should sleep after this pass so that the checkpoint thread runs, in microseconds:
+    /// a little while writes are held for it, more when the WAL is far too long, else nothing.</summary>
+    public static uint GiveWay => HoldWrites ? 200u : _phase != Idle && _walFrames >= CrowdedFrames ? 1000u : 0u;
+
     static void Ask(int what)
     {
         Volatile.Write(ref _request, what);
@@ -319,6 +328,7 @@ static unsafe class Db
 
     static void CheckpointLoop(nint cdb, byte[] restart, byte[] rollback, int fd)
     {
+        if (OperatingSystem.IsLinux()) Native.LowPriority();
         while (true)
         {
             Wake.WaitOne();

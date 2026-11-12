@@ -10,6 +10,7 @@ static unsafe partial class Native
     // the values of Linux's headers on x86-64
     public const int EAgain = 11, EIntr = 4, ENoBufs = 105, ECanceled = 125;
     public const long SysIoUringSetup = 425, SysIoUringEnter = 426, SysIoUringRegister = 427;
+    const long SysGetTid = 186;
     const int AfInet = 2, SockStream = 1, SockCloExec = 0x80000, SolSocket = 1, SoReuseAddr = 2, SoReusePort = 15;
     const int IpProtoTcp = 6, TcpNoDelay = 1, RlimitNoFile = 7;
     public const int ProtRead = 1, ProtWrite = 2, MapShared = 0x01, MapPrivate = 0x02, MapAnonymous = 0x20;
@@ -47,6 +48,15 @@ static unsafe partial class Native
 
     [LibraryImport("libc")]
     public static partial int posix_fadvise(int fd, long offset, long length, int advice);
+
+    [LibraryImport("libc")]
+    private static partial int setpriority(int which, int who, int priority);
+
+    [LibraryImport("libc")]
+    public static partial int usleep(uint microseconds);
+
+    /// <summary>Puts the calling thread at the lowest priority (nice 19): it runs when the others leave the CPU.</summary>
+    public static void LowPriority() => setpriority(0, (int)syscall(SysGetTid, 0, 0, 0, 0, 0, 0), 19);
 
     [LibraryImport("libc", SetLastError = true)]
     private static partial int getrlimit(int resource, ulong* limit);
