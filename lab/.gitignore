@@ -2,3 +2,4 @@ bin/
 obj/
 native/
 out/
+BenchmarkDotNet.Artifacts/

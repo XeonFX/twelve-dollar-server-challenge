@@ -66,3 +66,9 @@ while IFS= read -r line; do
 done
 if [ "${PROFILE:-}" = 1 ]; then for _ in $(seq 240); do [ -e "$OUT/$label.perf.done" ] && break; sleep 1; done; fi
 sudo journalctl -u "$unit" --no-pager -o cat | tail -80 > "$OUT/$label.server.txt" || true
+# What the load left in the database: the new posts and likes, and the three most liked posts. bench/load.js gives a
+# new post about 7 likes; thousands on one post mean the users did not read the posts their feeds showed.
+sudo systemctl stop "$unit" 2>/dev/null || true
+sqlite3 "$data/feed.db" "SELECT 'new posts', count(*) FROM posts WHERE id > 500000;
+  SELECT 'new likes', count(*) - 2016005 FROM likes;
+  SELECT 'post ' || post_id, count(*) || ' likes' FROM likes GROUP BY post_id ORDER BY count(*) DESC LIMIT 3;" > "$OUT/$label.data.txt" 2>&1 || true

@@ -132,7 +132,7 @@ static class Vu
             while (!stop.IsCancellationRequested)
             {
                 var feed = await c.Send(Endpoint.Feed, 0, iter, stats);
-                if (feed.Status != 200)
+                if (!feed.Ok)
                 {
                     if (think) await Delay(Between(3, 7), stop);
                     iter++;
@@ -217,7 +217,7 @@ sealed class Client(IPEndPoint ep, string host, Token token, int user = 0) : IDi
     readonly long[] _ids = new long[20];
     int _idCount;
 
-    public readonly record struct Result(int Status);
+    public readonly record struct Result(bool Ok);
 
     public async Task<Result> Send(Endpoint e, long id, int iter, Stats stats)
     {
@@ -273,11 +273,17 @@ sealed class Client(IPEndPoint ep, string host, Token token, int user = 0) : IDi
             Endpoint.Like => status is 200 or 201,
             _ => status == 201,
         };
+        if (ok && e == Endpoint.Feed)
+        {
+            // a feed without posts is a failed request: the user has no post to read, and the load would not be
+            // the one the challenge runs
+            _idCount = ResponseHead.PostIds(_buf.AsSpan(_bodyStart, _bodyLength), _ids);
+            ok = _idCount > 0;
+        }
         stats.Record(e, Stopwatch.GetElapsedTime(start), ok);
-        if (ok && e == Endpoint.Feed) ParseIds();
         if (_buf.Length > 0) ArrayPool<byte>.Shared.Return(_buf);
         _buf = [];
-        return new Result(ok ? status : (status == 0 ? -1 : status));
+        return new Result(ok);
     }
 
     int Build(Endpoint e, long id, int iter)
@@ -315,12 +321,7 @@ sealed class Client(IPEndPoint ep, string host, Token token, int user = 0) : IDi
             var span = _buf.AsSpan(0, have);
             int headEnd = span.IndexOf("\r\n\r\n"u8);
             if (headEnd < 0) continue;
-            var head = span[..headEnd];
-            int status = (head[9] - '0') * 100 + (head[10] - '0') * 10 + (head[11] - '0');
-            int cl = head.IndexOf("Content-Length: "u8);
-            if (cl < 0) cl = head.IndexOf("content-length: "u8);
-            int length = 0;
-            if (cl >= 0) Utf8Parser.TryParse(head[(cl + 16)..], out length, out _);
+            if (!ResponseHead.TryParse(span[..headEnd], out int status, out int length)) throw new System.IO.IOException("not a response");
             if (have < headEnd + 4 + length) continue;
             _bodyStart = headEnd + 4;
             _bodyLength = length;
@@ -328,23 +329,8 @@ sealed class Client(IPEndPoint ep, string host, Token token, int user = 0) : IDi
         }
     }
 
-    void ParseIds()
-    {
-        _idCount = 0;
-        var body = _buf.AsSpan(_bodyStart, _bodyLength);
-        int at = 0;
-        while (_idCount < _ids.Length)
-        {
-            int i = body[at..].IndexOf("{\"id\":"u8);
-            if (i < 0) break;
-            at += i + 6;
-            Utf8Parser.TryParse(body[at..], out long id, out int used);
-            _ids[_idCount++] = id;
-            at += used;
-        }
-    }
-
-    public long PickPostId() => _idCount == 0 ? 1 : _ids[Random.Shared.Next(_idCount)];
+    /// <summary>A post of the feed this user read last.</summary>
+    public long PickPostId() => _ids[Random.Shared.Next(_idCount)];
 
     void Close()
     {

@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <Compile Include="$(Entry)/*.cs" Exclude="$(Entry)/Program.cs" LinkBase="entry" />
+    <!-- what the load generator reads from a response -->
+    <Compile Include="../loadgen/Head.cs" LinkBase="loadgen" />
     <!-- SQLite with its B-tree functions exported, built by build-sqlite.sh -->
     <None Include="native/libsqlite3.*" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
     <None Include="../../schema.sql" CopyToOutputDirectory="PreserveNewest" Link="schema.sql" />
