@@ -12,23 +12,40 @@
     <!-- workstation GC without background GC: no GC threads; the rare GC runs on the loop that allocated -->
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
-    <!-- NativeAOT: no JIT, no tiering threads, no call counting -->
-    <PublishAot>true</PublishAot>
-    <OptimizationPreference>Speed</OptimizationPreference>
+    <!-- NativeAOT: no JIT, no tiering threads, no call counting. For measuring, RUNTIME=jit in build.sh's
+         environment builds the same sources for the JIT instead (-p:ServerRuntime=jit), see the group below. -->
+    <ServerRuntime Condition="'$(ServerRuntime)' == ''">aot</ServerRuntime>
+    <PublishAot Condition="'$(ServerRuntime)' == 'aot'">true</PublishAot>
+    <OptimizationPreference Condition="'$(OptimizationPreference)' == ''">Speed</OptimizationPreference>
     <EventSourceSupport>false</EventSourceSupport>
     <DebuggerSupport>false</DebuggerSupport>
     <MetricsSupport>false</MetricsSupport>
   </PropertyGroup>
 
   <!-- On Linux libc and SQLite (built by build.sh into native/libsqlite3.a) bind at link time: direct calls. -->
-  <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('linux'))">
+  <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('linux')) And '$(ServerRuntime)' == 'aot'">
     <DirectPInvoke Include="libc" />
     <DirectPInvoke Include="sqlite3" />
     <NativeLibrary Include="native/libsqlite3.a" />
   </ItemGroup>
   <!-- AVX2 and BMI: every x86 box since 2015 has them ("native" broke on the grader for another entry, #74) -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'linux-x64'">
-    <IlcInstructionSet>x86-64-v3</IlcInstructionSet>
+    <IlcInstructionSet Condition="'$(IlcInstructionSet)' == ''">x86-64-v3</IlcInstructionSet>
   </PropertyGroup>
+
+  <!-- The JIT build: framework-dependent, on the runtime install.sh put on the box. SQLite is a shared library
+       beside the server (build.sh makes native/libsqlite3.so), found by JitInterop.cs. Tiering, tiered PGO and
+       ReadyToRun come from build.sh's PUBLISH_PROPS. -->
+  <PropertyGroup Condition="'$(ServerRuntime)' == 'jit'">
+    <SelfContained>false</SelfContained>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(ServerRuntime)' != 'jit'">
+    <Compile Remove="JitInterop.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(ServerRuntime)' == 'jit'">
+    <None Include="native/libsqlite3.so" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Link="libsqlite3.so" />
+  </ItemGroup>
 
 </Project>
