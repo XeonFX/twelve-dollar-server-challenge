@@ -101,6 +101,7 @@ jobs:
           levels="${{ github.event.inputs.levels || '150000,250000' }}"
           rivals="${{ github.event.inputs.rivals || 'fsharp-uring-delneg rust-iouring-kensac' }}"
           variants="${{ github.event.inputs.variants || 'base: w10:WINDOW_MS=10 n64:WAIT_COUNT=64,WAIT_US=2000 n64w10:WAIT_COUNT=64,WAIT_US=2000,WINDOW_MS=10 n64w10b:WAIT_COUNT=64,WAIT_US=2000,WINDOW_MS=10,RECV_BUFFERS=1024 n32w10b:WAIT_COUNT=32,WAIT_US=1000,WINDOW_MS=10,RECV_BUFFERS=512' }}"
+          bash lab/box.sh up
           for round in $(seq "${{ github.event.inputs.rounds || '1' }}"); do
             for v in $variants; do
               IFS=, read -r -a settings <<< "${v#*:}"
@@ -111,8 +112,9 @@ jobs:
       - name: results
         if: always()
         run: |
-          printf 'label\tusers\treq/s\tp50\tp95\tp99\tmax\terr%%\tcpu%%\tus/req\tpeakMB\n' | cat - lab/out/load.tsv | column -t -s "$(printf '\t')"
+          printf 'label\tusers\treq/s\tp50\tp95\tp99\tmax\terr%%\tapp%%\tapp-us/req\tcpu0%%\tcpu0-us/req\tpeakMB\n' | cat - lab/out/load.tsv | column -t -s "$(printf '\t')"
           tail -n 5 lab/out/*.server.txt lab/out/*.lg.err 2>/dev/null || true
+          sudo dmesg | grep -iE "conntrack|SYN flood|out of memory|oom" | tail -5 || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
