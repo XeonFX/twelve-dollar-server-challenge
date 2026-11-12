@@ -41,6 +41,8 @@ sealed unsafe class Loop
     /// <summary>STATS=1 (for measuring): a line on stderr every two seconds with where the passes' time went.</summary>
     static readonly bool Stats = Knob("STATS", 0) != 0;
     long _statAt, _statPasses, _statCqes, _statHandle, _statCommit, _statSend, _statSleep;
+    /// <summary>The longest wait, handling, commit and send of one pass since the last line, and when the last pass ended.</summary>
+    long _statMaxWait, _statMaxHandle, _statMaxCommit, _statMaxSend, _statEnd;
 
     /// <summary>A connection state bit beside <see cref="Ring"/>'s: its next request already got 100 Continue.</summary>
     const byte ContinueSent = 64;
@@ -187,12 +189,18 @@ sealed unsafe class Loop
                 _statCommit += commitEnd - handled;
                 _statSend += sent - commitEnd;
                 _statSleep += end - sent;
+                if (_statEnd != 0) _statMaxWait = Math.Max(_statMaxWait, now - _statEnd);
+                _statMaxHandle = Math.Max(_statMaxHandle, handled - now);
+                _statMaxCommit = Math.Max(_statMaxCommit, commitEnd - handled);
+                _statMaxSend = Math.Max(_statMaxSend, sent - commitEnd);
+                _statEnd = end;
                 if (end - _statAt >= 2 * Stopwatch.Frequency)
                 {
                     double ms = 1000.0 / Stopwatch.Frequency;
-                    Console.Error.WriteLine($"stats passes {_statPasses} cqes {_statCqes} handle {_statHandle * ms:F0} commit {_statCommit * ms:F0} send {_statSend * ms:F0} sleep {_statSleep * ms:F0} ms of {(end - _statAt) * ms:F0}; carry {_carry.Count} rearm {_rearm.Count} held {_held.Count} {Db.State}");
+                    Console.Error.WriteLine($"stats passes {_statPasses} cqes {_statCqes} handle {_statHandle * ms:F0} commit {_statCommit * ms:F0} send {_statSend * ms:F0} sleep {_statSleep * ms:F0} ms of {(end - _statAt) * ms:F0}; longest wait {_statMaxWait * ms:F1} handle {_statMaxHandle * ms:F1} commit {_statMaxCommit * ms:F1} send {_statMaxSend * ms:F1}; carry {_carry.Count} rearm {_rearm.Count} held {_held.Count} {Db.State}");
                     _statAt = end;
                     _statPasses = _statCqes = _statHandle = _statCommit = _statSend = _statSleep = 0;
+                    _statMaxWait = _statMaxHandle = _statMaxCommit = _statMaxSend = 0;
                 }
             }
             open = 0;
