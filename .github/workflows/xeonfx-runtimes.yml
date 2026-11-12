@@ -12,6 +12,9 @@ on:
       jobs:
         description: "which jobs: bench, load or both"
         default: "bench load"
+      entry_ref:
+        description: "the entry's commit (default: ENTRY_REF below; 235a18373cc57844b6defc546459ef5e43889954 is the entry before its B-tree reads, with the same build options)"
+        default: ""
       levels:
         description: users at each step
         default: "40000,80000"
@@ -58,7 +61,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.ENTRY_REF }}
+          ref: ${{ github.event.inputs.entry_ref || env.ENTRY_REF }}
           path: entry
       - name: tools and seed
         run: |
@@ -106,7 +109,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.ENTRY_REF }}
+          ref: ${{ github.event.inputs.entry_ref || env.ENTRY_REF }}
           path: entry
       - name: tools and seed
         run: |
