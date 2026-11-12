@@ -44,6 +44,9 @@ static unsafe class Harness
     /// <summary>Opens the entry on a database and turns its B-tree reads on as the server does at startup.</summary>
     public static void Open(string path)
     {
+        // a test that failed inside a pass left its transaction and cursors open on the last database
+        if (Db.InTxn) Db.Commit();
+        Clear();
         Reads.On = false;
         Db.Open(path, 8192);
         Db.StartReads();
@@ -56,19 +59,28 @@ static unsafe class Harness
         return sb.Append("COMMIT;").ToString();
     }
 
-    public static string Text() => Encoding.UTF8.GetString(Json.Body.Written);
+    static readonly Arena Scratch = new(1 << 16);
+
+    /// <summary>Points the JSON writer at an empty scratch buffer.</summary>
+    public static void Clear()
+    {
+        Json.Out = Scratch;
+        Scratch.Length = 0;
+    }
+
+    public static string Text() => Encoding.UTF8.GetString(Scratch.Written);
 
     /// <summary>The feed from the B-tree path (null when it leaves the answer to SQL) and from the reference query.</summary>
     public static (string? Btree, string Sql) Feeds()
     {
         Db.Begin();
-        Json.Clear();
+        Clear();
         string? bt = Reads.Feed() ? Text() : null;
-        if (bt is null) Assert.Equal(0, Json.Body.Length); // nothing half-written is left behind
-        Json.Clear();
+        if (bt is null) Assert.Equal(0, Scratch.Length); // nothing half-written is left behind
+        Clear();
         Api.FeedSql();
         string sql = Text();
-        Json.Clear();
+        Clear();
         return (bt, sql);
     }
 
@@ -77,12 +89,12 @@ static unsafe class Harness
     public static (int Code, string Btree, string? Sql) Posts(long id)
     {
         Db.Begin();
-        Json.Clear();
+        Clear();
         int code = Reads.GetPost(id);
         string bt = Text();
-        Json.Clear();
+        Clear();
         string? sql = Api.GetPostSql(id) ? Text() : null;
-        Json.Clear();
+        Clear();
         return (code, bt, sql);
     }
 
@@ -120,6 +132,11 @@ static unsafe class Harness
         if (Db.InTxn) Assert.True(Db.Commit());
         string response = Encoding.UTF8.GetString(o.Written);
         int split = response.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+        // the head says how long the body is, in bytes
+        var length = System.Text.RegularExpressions.Regex.Match(response[..split], "\r\nContent-Length: *(\\d+)(\r\n|$)");
+        Assert.True(length.Success, response[..split]);
+        Assert.Equal(o.Length - Encoding.UTF8.GetByteCount(response[..(split + 4)]), int.Parse(length.Groups[1].Value));
+        Assert.Contains("\r\nContent-Type: application/json\r\n", response[..split]);
         return (int.Parse(response.AsSpan(9, 3)), response[(split + 4)..]);
     }
 }

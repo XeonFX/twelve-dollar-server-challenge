@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# load.sh <label> <entry dir> <levels> [rate] [settle] [hold]
+# load.sh <label> <entry dir> <levels> [rate] [settle] [hold] [NAME=value ...]
 #
 # One staircase of users against a built entry on this machine: the entry as a transient systemd unit on CPU 0 with
 # the scorer's limits (65,535 descriptors, 2 GB, no swap), the load generator on the other CPUs. For each level it
 # appends a TSV line to lab/out/load.tsv: latencies, requests a second, and the unit's CPU time per request and
 # peak memory over the hold (from its cgroup, as the leaderboard reports them).
 #
+# NAME=value pairs go into the entry's environment (its test settings).
+#
 # Loopback is not the scorer's network: read the entries against each other, never as a score.
 set -euo pipefail
 label=$1 dir=$(cd "$2" && pwd) levels=$3 rate=${4:-4000} settle=${5:-20} hold=${6:-60}
+extra=(); for kv in "${@:7}"; do [ -n "$kv" ] && extra+=("--setenv=$kv"); done
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/lab/out"; mkdir -p "$OUT"
 LG="$ROOT/lab/loadgen/bin/lg/loadgen"
@@ -21,13 +24,13 @@ trap stop EXIT
 sudo systemd-run --quiet --unit="$unit" --uid="$(id -u)" --gid="$(id -g)" --working-directory="$dir" \
   -p LimitNOFILE=65535 -p MemoryMax=2G -p MemorySwapMax=0 -p AllowedCPUs=0 \
   --setenv=JWT_SECRET=twelve-dollar-challenge --setenv=HOST=127.0.0.1 --setenv=PORT=3000 --setenv=SQLITE_PATH="$data/feed.db" \
-  --setenv=HOME="$HOME" --setenv=PATH="$PATH" bash start.sh
+  --setenv=HOME="$HOME" --setenv=PATH="$PATH" "${extra[@]}" bash start.sh
 for _ in $(seq 120); do curl -sf -m 1 http://127.0.0.1:3000/health >/dev/null && break; sleep 0.5; done
 curl -sf -m 1 http://127.0.0.1:3000/health >/dev/null || { echo "$label: no /health after 60 s"; sudo journalctl -u "$unit" -n 30 --no-pager; exit 1; }
 
 usage() { awk '/^usage_usec/ {print $2}' "$cg/cpu.stat"; }
 cpus=$(nproc)
-sudo bash -c "ulimit -n 2000000; export DOTNET_ROOT=/usr/local/dotnet; exec taskset -c 1-$((cpus - 1)) '$LG' steps --url http://127.0.0.1:3000 --tokens '$ROOT/seed/tokens.json' \
+sudo bash -c "ulimit -n 1000000; export DOTNET_ROOT=/usr/local/dotnet; exec taskset -c 1-$((cpus - 1)) '$LG' steps --url http://127.0.0.1:3000 --tokens '$ROOT/seed/tokens.json' \
   --levels $levels --rate $rate --settle $settle --hold $hold --sources 24" 2>"$OUT/$label.lg.err" |
 while IFS= read -r line; do
   echo "$line" >> "$OUT/$label.lg.txt"

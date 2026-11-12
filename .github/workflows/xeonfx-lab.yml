@@ -12,6 +12,12 @@ on:
       rivals:
         description: entries to run beside ours
         default: "fsharp-uring-delneg rust-iouring-kensac"
+      variants:
+        description: "our entry's runs, label:NAME=value,NAME=value separated by spaces"
+        default: "base: w10:WINDOW_MS=10 n64:WAIT_COUNT=64,WAIT_US=2000 n64w10:WAIT_COUNT=64,WAIT_US=2000,WINDOW_MS=10 n64w10b:WAIT_COUNT=64,WAIT_US=2000,WINDOW_MS=10,RECV_BUFFERS=1024 n32w10b:WAIT_COUNT=32,WAIT_US=1000,WINDOW_MS=10,RECV_BUFFERS=512"
+      rounds:
+        description: times each run repeats
+        default: "1"
 permissions:
   contents: read
 env:
@@ -92,11 +98,14 @@ jobs:
         run: /usr/local/dotnet/dotnet publish lab/loadgen/loadgen.csproj -c Release -o lab/loadgen/bin/lg -v q
       - name: staircases, interleaved
         run: |
-          export DOTNET_ROOT=/usr/local/dotnet
-          levels="${{ github.event.inputs.levels || '100000,200000' }}"
+          levels="${{ github.event.inputs.levels || '150000,250000' }}"
           rivals="${{ github.event.inputs.rivals || 'fsharp-uring-delneg rust-iouring-kensac' }}"
-          for round in 1 2; do
-            bash lab/load.sh "cs-$round" "$ENTRY" "$levels"
+          variants="${{ github.event.inputs.variants || 'base: w10:WINDOW_MS=10 n64:WAIT_COUNT=64,WAIT_US=2000 n64w10:WAIT_COUNT=64,WAIT_US=2000,WINDOW_MS=10 n64w10b:WAIT_COUNT=64,WAIT_US=2000,WINDOW_MS=10,RECV_BUFFERS=1024 n32w10b:WAIT_COUNT=32,WAIT_US=1000,WINDOW_MS=10,RECV_BUFFERS=512' }}"
+          for round in $(seq "${{ github.event.inputs.rounds || '1' }}"); do
+            for v in $variants; do
+              IFS=, read -r -a settings <<< "${v#*:}"
+              bash lab/load.sh "cs-${v%%:*}-$round" "$ENTRY" "$levels" 4000 20 60 "${settings[@]}"
+            done
             for r in $rivals; do bash lab/load.sh "${r%%-*}-$round" "submissions/$r" "$levels"; done
           done
       - name: results
